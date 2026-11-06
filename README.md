@@ -78,11 +78,14 @@
 ### 4.1 直接安装 `.ipk`（OpenWrt 23.05 / 24.10，opkg）
 
 ```sh
-# 从 Releases 下载，或本地构建：sh scripts/make-ipk.sh
+# 从 Releases 下载（也可本地构建：sh scripts/make-ipk.sh）
+wget https://github.com/Lancenas/luci-app-cloudflared/releases/download/v1.0.0/luci-app-cloudflared_1.0.0-1_all.ipk
 opkg update
 opkg install luci-app-cloudflared_1.0.0-1_all.ipk
 # 依赖：luci-base rpcd-mod-file curl ca-bundle
 ```
+
+仓库：<https://github.com/Lancenas/luci-app-cloudflared> · [Releases](https://github.com/Lancenas/luci-app-cloudflared/releases)
 
 `postinst` 会自动执行 uci-defaults、重启 rpcd、enable 服务。菜单在 **Services → Cloudflared 隧道**。
 
