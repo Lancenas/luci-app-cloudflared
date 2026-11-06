@@ -5,6 +5,9 @@ dist/
 build/
 bin/
 
+# Local agent workspace data (never publish)
+.workbuddy/
+
 # Runtime leftovers
 *.log
 .DS_Store

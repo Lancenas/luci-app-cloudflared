@@ -224,8 +224,12 @@ fetch() {
 
 # Split a JSON array/blob into one object per line. GitHub returns compact
 # one-line JSON; splitting at "},{" is enough for the fields we need.
+# NOTE: busybox awk treats a bare "{" in a regex as the start of an interval
+# expression and aborts with "Invalid contents of {}", so use sed instead.
+# A backslash followed by a literal newline inserts a newline in POSIX sed.
 split_objects() {
-	awk '{ gsub(/},{/, "}\n{"); print }' "$1" > "$2"
+	sed 's/},[[:space:]]*[{]/}\
+{/g' "$1" > "$2"
 }
 
 resolve_error() {
@@ -293,7 +297,7 @@ resolve_release() {
 	valid_tag "$TAG" || { resolve_error 'tag_name 含有非法字符'; return 1; }
 
 	split_objects "$_obj" "$TMPD/chunks.txt"
-	_line=$(awk -v want="$ASSET" '$0 ~ "\"name\": *\"" want "\"" { print; exit }' "$TMPD/chunks.txt")
+	_line=$(grep -F "$ASSET" "$TMPD/chunks.txt" | grep -F '"name"' | head -n1)
 	[ -n "$_line" ] || { resolve_error "版本 $TAG 没有提供 $ASSET 资产"; return 1; }
 
 	DIGEST=$(printf '%s\n' "$_line" | sed -n 's/.*"digest": *"sha256:\([0-9a-fA-F]*\)".*/\1/p' | head -n1)

@@ -1,6 +1,18 @@
 # Changelog
 
+## 1.0.1 (2026-11-06)
+
+真机安装测试后修复（Kwrt 24.10-SNAPSHOT / x86_64 / QEMU，opkg + nginx + LuCI 26.x）：
+
+- **修复 ipk 根本装不上**：v1.0.0 误把 `.ipk` 打成 Debian `ar` 容器；官方格式是 gzip 压缩的 tar（已用 OpenWrt 24.10 官方 feed 样本 `1f 8b` 文件头与 opkg `deb_extract()` 源码核实）。`opkg install` 曾报 `pkg_init_from_file: Malformed package file`。
+- **修复 macOS 构建包「安装成功但没有文件」**：bsdtar 写入的 PAX `PaxHeader/` 条目被 opkg 记录成真实文件；打包器改为 Python 生成纯 USTAR，并在构建时自检禁止 PAX / AppleDouble 条目。
+- **修复 `check` 在 busybox awk 上失败**：`split_objects()` 的 `gsub(/},{/ …)` 触发 `awk: bad regex … Invalid contents of {}`，导致误报「版本没有提供资产」；改用 POSIX sed 插入换行，资产匹配改用 grep。
+- CI 改为校验 gzip/tar 外层成员与 PAX，不再用 `ar t`。
+- 已在真机完整验证：菜单/JS/ACL、一键升级（SHA-256 + 自检 + 备份）、指定 tag 降级、界面回滚、UCI 保存后 procd reload。
+
 ## 1.0.0 (2026-11-06)
+
+> 已废弃，请勿使用（ipk 容器格式错误 + busybox awk 解析失败），升级到 1.0.1。
 
 - 首个可用版本：标准 OpenWrt 软件包（`PKGARCH:=all`），UCI 配置 + procd 服务。
 - LuCI 三个页面：状态、设置、升级（现代 JavaScript view + menu.d + rpcd ACL）。

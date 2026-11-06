@@ -79,15 +79,20 @@
 
 ```sh
 # 从 Releases 下载（也可本地构建：sh scripts/make-ipk.sh）
-wget https://github.com/Lancenas/luci-app-cloudflared/releases/download/v1.0.0/luci-app-cloudflared_1.0.0-1_all.ipk
-opkg update
-opkg install luci-app-cloudflared_1.0.0-1_all.ipk
-# 依赖：luci-base rpcd-mod-file curl ca-bundle
+wget https://github.com/Lancenas/luci-app-cloudflared/releases/download/v1.0.1/luci-app-cloudflared_1.0.1-1_all.ipk
+opkg install luci-app-cloudflared_1.0.1-1_all.ipk
+# 依赖：luci-base rpcd-mod-file curl ca-bundle（一般已随 LuCI 装好）
 ```
+
+> ⚠️ **v1.0.0 已废弃**：该版本的 ipk 误用了 Debian `ar` 容器，opkg 会报 `Malformed package file`，在任何 OpenWrt 上都装不上；且 `check` 在 busybox awk 上解析失败。请使用 **v1.0.1 及以上**。
+
+`.ipk` 的正确容器是 **gzip 压缩的 tar**（外层 `./debian-binary`、`./control.tar.gz`、`./data.tar.gz`），内部两个 tar 必须是纯 USTAR。`scripts/make-ipk.sh` 用 Python 生成全部归档，因此在 macOS 上也不会混入 bsdtar 的 PAX `PaxHeader/` 条目——那种条目会被 opkg 当成真实文件，造成「安装成功但一个文件都没落地」。
 
 仓库：<https://github.com/Lancenas/luci-app-cloudflared> · [Releases](https://github.com/Lancenas/luci-app-cloudflared/releases)
 
 `postinst` 会自动执行 uci-defaults、重启 rpcd、enable 服务。菜单在 **Services → Cloudflared 隧道**。
+
+**真机验证**（Kwrt 24.10-SNAPSHOT / x86_64 / QEMU）：`opkg install` 落地 13 个文件且权限正确 → LuCI 三个页面与 4 个 JS 资源均 200 → `cgi-exec` 经 rpcd ACL 返回 status/log → 一键升级下载官方 `2026.10.7`（38 MB，SHA-256 校验通过）→ 降级到 `2026.10.6` 生成 `.bak` → 界面回滚恢复 `2026.10.7`。
 
 ### 4.2 OpenWrt 25.12+（apk）或集成进固件
 
@@ -214,6 +219,9 @@ logread -e cloudflared-update
 
 | 现象 | 排查 |
 | --- | --- |
+| `Malformed package file` | 说明 ipk 是 `ar` 容器（v1.0.0 的问题）；改用 v1.0.1+ 的 gzip/tar 包，`tar -tzf xxx.ipk` 应列出 `./debian-binary ./control.tar.gz ./data.tar.gz` |
+| 安装成功但文件没落地 | 包内含 PAX `PaxHeader/` 条目；用本仓库 `scripts/make-ipk.sh` 重新构建（纯 USTAR），别用系统 `tar` 直接打 |
+| `awk: bad regex … Invalid contents of {}` | 旧版 `cloudflared-ctl` 的 JSON 切分问题，升级到 v1.0.1+ |
 | 菜单不显示 | 确认 `/usr/share/rpcd/acl.d/luci-app-cloudflared.json` 存在且 `rpcd` 已重启；`uci show cloudflared` 能读到配置；浏览器强刷清 LuCI 缓存 |
 | 按钮报权限错误 | ACL 未生效，`/etc/init.d/rpcd restart`；确认 `rpcd-mod-file` 与 `luci-base`（cgi-io）已安装 |
 | 检查更新失败 | `curl -fsSL https://api.github.com/repos/cloudflare/cloudflared/releases/latest`；未认证 API 限流 60 次/小时，可填 GitHub Token |
@@ -228,8 +236,8 @@ logread -e cloudflared-update
 
 ```sh
 sh scripts/check.sh         # sh -n / JS 语法 / JSON 校验
-sh scripts/make-ipk.sh      # 产出 dist/luci-app-cloudflared_1.0.0-1_all.ipk
-ar t dist/*.ipk             # 查看包内容
+sh scripts/make-ipk.sh      # 产出 dist/luci-app-cloudflared_1.0.1-1_all.ipk（gzip/tar + 纯 USTAR）
+tar -tzf dist/*.ipk         # 查看外层包内容
 ```
 
 CI 会跑静态检查、shellcheck（仅 error 级别）并产出 ipk 产物。UI 文案用 `_()` 包裹，便于后续补 `.po` 翻译。
