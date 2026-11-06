@@ -1,0 +1,648 @@
+#!/bin/sh
+# luci-app-cloudflared - control plane / updater
+#
+# Subcommands (also used by LuCI through cgi-exec):
+#   status                     JSON snapshot, no network access
+#   check [--refresh]          query GitHub, refresh the release cache, JSON reply
+#   log                        last 200 lines of the upgrade log
+#   start-update [options]     spawn an upgrade in the background, JSON reply
+#       --latest               always target /releases/latest (ignores the channel)
+#       --version TAG          target one explicit release tag
+#       --force                reinstall even if the version already matches
+#   update-run [options]       synchronous upgrade (used by cron / SSH / background)
+#   rollback                   restore the previous binary, JSON reply
+#   cron-setup                 rebuild the auto-update crontab line from UCI
+#   cron-run                   cron entry point (no --force)
+#   restore                    post-sysupgrade entry point
+#   help                       usage
+#
+# Security notes:
+#   * the tunnel token lives in /etc/cloudflared/tunnel-token (0600) and is
+#     never passed to the LuCI process;
+#   * downloaded binaries are verified against the sha256 digest published in
+#     the GitHub release metadata before being installed;
+#   * only one upgrade can run at a time (flock, with a mkdir fallback).
+
+UCI=cloudflared
+BIN=/usr/sbin/cloudflared
+BACKUP=$BIN.bak
+STAGE=$BIN.new
+TOKEN_FILE=/etc/cloudflared/tunnel-token
+CONFIG_FILE=/etc/cloudflared/config.yml
+RUN_DIR=/var/run/cloudflared
+LOG_FILE=$RUN_DIR/update.log
+LOG_OLD=$RUN_DIR/update.log.1
+STATE_FILE=$RUN_DIR/update.state
+CACHE_FILE=$RUN_DIR/release.json
+LOCK_FILE=$RUN_DIR/update.lock
+API=https://api.github.com/repos/cloudflare/cloudflared
+DOWNLOAD=https://github.com/cloudflare/cloudflared/releases/download
+UA='luci-app-cloudflared/1.0'
+
+TMPD=''
+RESOLVE_ERROR=''
+SERVICE_STOPPED=0
+LOCK_IS_DIR=0
+FETCH_TIMEOUT=60
+TAG=''
+ASSET=''
+DIGEST=''
+SIZE=''
+PUBLISHED=''
+PRERELEASE=0
+ARCH=''
+
+# ---------------------------------------------------------------- helpers
+
+mkdir_run() {
+	if [ -d "$RUN_DIR" ] && [ -w "$RUN_DIR" ]; then
+		return 0
+	fi
+	if mkdir -p "$RUN_DIR" 2>/dev/null && [ -w "$RUN_DIR" ]; then
+		chmod 755 "$RUN_DIR" 2>/dev/null
+		return 0
+	fi
+	# Unusual / read-only /var/run (also lets the CLI be tested off-router).
+	RUN_DIR=/tmp/cloudflared-run
+	LOG_FILE=$RUN_DIR/update.log
+	LOG_OLD=$RUN_DIR/update.log.1
+	STATE_FILE=$RUN_DIR/update.state
+	CACHE_FILE=$RUN_DIR/release.json
+	LOCK_FILE=$RUN_DIR/update.lock
+	mkdir -p "$RUN_DIR" 2>/dev/null || return 1
+	chmod 755 "$RUN_DIR" 2>/dev/null
+	return 0
+}
+
+log_line() {
+	_msg="$*"
+	_ts=$(date '+%Y-%m-%d %H:%M:%S')
+	printf '[%s] %s\n' "$_ts" "$_msg"
+	[ -d "$RUN_DIR" ] && printf '[%s] %s\n' "$_ts" "$_msg" >> "$LOG_FILE" 2>/dev/null
+	logger -t cloudflared-update "$_msg"
+}
+
+json_quote() {
+	printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr '\n\r\t' '   ')"
+}
+
+json_fail() {
+	printf '{"ok":false,"error":%s}\n' "$(json_quote "$1")"
+	exit 0
+}
+
+uci_val() {
+	_v=$(uci -q get "$UCI.$1.$2" 2>/dev/null)
+	if [ -n "$_v" ]; then printf '%s' "$_v"; else printf '%s' "${3:-}"; fi
+}
+
+uci_set() {
+	uci -q set "$UCI.$1.$2=$3" >/dev/null 2>&1 && uci -q commit "$UCI" >/dev/null 2>&1
+	return 0
+}
+
+write_state() {
+	mkdir_run
+	_msg=$(json_quote "$2")
+	_target=$(json_quote "${TAG:-}")
+	printf '{"state":"%s","message":%s,"pid":%s,"timestamp":%s,"target":%s}\n' \
+		"$1" "$_msg" "${STATE_PID:-0}" "$(date +%s)" "$_target" \
+		> "$STATE_FILE.tmp" 2>/dev/null && mv "$STATE_FILE.tmp" "$STATE_FILE"
+}
+
+state_get() {
+	[ -f "$STATE_FILE" ] || return 0
+	sed -n 's/.*"'"$1"'": *"\([^"]*\)".*/\1/p' "$STATE_FILE" | head -n1
+}
+
+state_pid() {
+	[ -f "$STATE_FILE" ] || return 0
+	sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' "$STATE_FILE" | head -n1
+}
+
+cache_str() {
+	[ -f "$CACHE_FILE" ] || return 0
+	sed -n 's/.*"'"$1"'": *"\([^"]*\)".*/\1/p' "$CACHE_FILE" | head -n1
+}
+
+cache_num() {
+	[ -f "$CACHE_FILE" ] || return 0
+	sed -n 's/.*"'"$1"'": *\([0-9][0-9]*\).*/\1/p' "$CACHE_FILE" | head -n1
+}
+
+cleanup() {
+	[ -n "$TMPD" ] && [ -d "$TMPD" ] && rm -rf "$TMPD"
+	rm -f "$STAGE"
+	[ "$LOCK_IS_DIR" = '1' ] && rm -rf "$LOCK_FILE.d"
+	return 0
+}
+
+on_signal() {
+	log_line 'ERROR: upgrade interrupted, restoring the service'
+	[ "$SERVICE_STOPPED" = '1' ] && /etc/init.d/cloudflared start >/dev/null 2>&1
+	write_state error '升级被中断'
+	exit 143
+}
+
+acquire_lock() {
+	mkdir_run
+	if command -v flock >/dev/null 2>&1; then
+		exec 9>"$LOCK_FILE" || return 1
+		flock -n 9 || return 1
+	else
+		# BusyBox builds without flock: a lock directory is good enough here.
+		[ -d "$LOCK_FILE.d" ] && rm -rf "$LOCK_FILE.d"
+		mkdir "$LOCK_FILE.d" >/dev/null 2>&1 || return 1
+		LOCK_IS_DIR=1
+	fi
+	return 0
+}
+
+arch_get() {
+	_ov=$(uci_val update arch_override auto)
+	case "$_ov" in
+		''|auto) ;;
+		*) printf '%s' "$_ov"; return 0 ;;
+	esac
+
+	_m=$(uname -m 2>/dev/null)
+	case "$_m" in
+		x86_64|amd64) printf 'amd64'; return 0 ;;
+		aarch64|arm64) printf 'arm64'; return 0 ;;
+		armv7*|armv8l) printf 'armhf'; return 0 ;;
+		armv6*|armv5*|arm*) printf 'arm'; return 0 ;;
+		i386|i486|i586|i686) printf '386'; return 0 ;;
+	esac
+
+	# Some firmwares report a generic "armv7l" or an unusual uname; the
+	# OpenWrt architecture string is a useful second opinion.
+	[ -f /etc/openwrt_release ] && . /etc/openwrt_release
+	case "${DISTRIB_ARCH:-}" in
+		aarch64*) printf 'arm64' ;;
+		x86_64*|x86_64) printf 'amd64' ;;
+		arm_cortex-a*|arm_*neon*) printf 'armhf' ;;
+		arm_*) printf 'arm' ;;
+		i386*|i486*|i586*|i686*) printf '386' ;;
+		*) printf 'unsupported' ;;
+	esac
+	return 0
+}
+
+valid_tag() {
+	case "$1" in
+		''|*[!A-Za-z0-9._-]*) return 1 ;;
+	esac
+	return 0
+}
+
+# Download $1 to $2. curl is preferred (proper TLS + auth header), with a
+# wget / uclient-fetch fallback for minimal firmwares.
+fetch() {
+	_url=$1
+	_out=$2
+	_token=$(uci_val update github_token '')
+	if command -v curl >/dev/null 2>&1; then
+		if [ -n "$_token" ]; then
+			curl -fsSL --connect-timeout 15 --max-time "$FETCH_TIMEOUT" \
+				-H "Authorization: Bearer $_token" \
+				-H 'Accept: application/vnd.github+json' \
+				-H "User-Agent: $UA" -o "$_out" "$_url" && return 0
+		else
+			curl -fsSL --connect-timeout 15 --max-time "$FETCH_TIMEOUT" \
+				-H 'Accept: application/vnd.github+json' \
+				-H "User-Agent: $UA" -o "$_out" "$_url" && return 0
+		fi
+	fi
+	if command -v wget >/dev/null 2>&1; then
+		wget -q -T "$FETCH_TIMEOUT" -O "$_out" "$_url" && return 0
+	fi
+	if command -v uclient-fetch >/dev/null 2>&1; then
+		uclient-fetch -q -T "$FETCH_TIMEOUT" -O "$_out" "$_url" && return 0
+	fi
+	return 1
+}
+
+# Split a JSON array/blob into one object per line. GitHub returns compact
+# one-line JSON; splitting at "},{" is enough for the fields we need.
+split_objects() {
+	awk '{ gsub(/},{/, "}\n{"); print }' "$1" > "$2"
+}
+
+resolve_error() {
+	RESOLVE_ERROR="$1"
+	return 1
+}
+
+# Resolve the target release and set TAG / ASSET / DIGEST / SIZE / PUBLISHED /
+# PRERELEASE / ARCH. $1 = latest | channel | version:TAG
+resolve_release() {
+	_mode=${1:-channel}
+	ARCH=$(arch_get)
+	case "$ARCH" in
+		amd64|arm64|armhf|arm|386) ;;
+		*) resolve_error "不支持的设备架构 ($ARCH)：cloudflared 官方没有对应二进制，可在设置里指定 arch_override"; return 1 ;;
+	esac
+	ASSET="cloudflared-linux-$ARCH"
+
+	if [ -z "$TMPD" ]; then
+		TMPD=$(mktemp -d /tmp/cloudflared.XXXXXX) || { resolve_error '无法创建临时目录'; return 1; }
+	fi
+	chmod 700 "$TMPD"
+	_json="$TMPD/release.json"
+	_obj="$TMPD/object.json"
+	_islist=0
+
+	case "$_mode" in
+		latest)
+			_url="$API/releases/latest" ;;
+		version:*)
+			TAG=${_mode#version:}
+			valid_tag "$TAG" || { resolve_error '版本号含有非法字符'; return 1; }
+			_url="$API/releases/tags/$TAG" ;;
+		*)
+			_ch=$(uci_val update channel stable)
+			case "$_ch" in
+				preview)
+					_url="$API/releases?per_page=10"
+					_islist=1 ;;
+				pinned)
+					TAG=$(uci_val update pinned_version '')
+					[ -n "$TAG" ] || { resolve_error '已选择固定版本通道，但没有填写 pinned_version'; return 1; }
+					valid_tag "$TAG" || { resolve_error 'pinned_version 含有非法字符'; return 1; }
+					_url="$API/releases/tags/$TAG" ;;
+				*)
+					_url="$API/releases/latest" ;;
+			esac ;;
+	esac
+
+	FETCH_TIMEOUT=60
+	fetch "$_url" "$_json" || { resolve_error '无法从 GitHub 获取版本信息（网络不通或 API 限流，可设置 github_token）'; return 1; }
+
+	if [ "$_islist" = '1' ]; then
+		split_objects "$_json" "$TMPD/list.txt"
+		_first=$(head -n1 "$TMPD/list.txt")
+		TAG=$(printf '%s\n' "$_first" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)
+		[ -n "$TAG" ] || { resolve_error '无法解析最新预览版的 tag_name'; return 1; }
+		valid_tag "$TAG" || { resolve_error 'GitHub 返回的 tag_name 含有非法字符'; return 1; }
+		fetch "$API/releases/tags/$TAG" "$_obj" || { resolve_error "无法获取版本 $TAG 的详细信息"; return 1; }
+	else
+		cp "$_json" "$_obj"
+		TAG=$(sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' "$_obj" | head -n1)
+	fi
+	[ -n "$TAG" ] || { resolve_error '无法解析 tag_name'; return 1; }
+	valid_tag "$TAG" || { resolve_error 'tag_name 含有非法字符'; return 1; }
+
+	split_objects "$_obj" "$TMPD/chunks.txt"
+	_line=$(awk -v want="$ASSET" '$0 ~ "\"name\": *\"" want "\"" { print; exit }' "$TMPD/chunks.txt")
+	[ -n "$_line" ] || { resolve_error "版本 $TAG 没有提供 $ASSET 资产"; return 1; }
+
+	DIGEST=$(printf '%s\n' "$_line" | sed -n 's/.*"digest": *"sha256:\([0-9a-fA-F]*\)".*/\1/p' | head -n1)
+	SIZE=$(printf '%s\n' "$_line" | sed -n 's/.*"size": *\([0-9][0-9]*\).*/\1/p' | head -n1)
+	case "$SIZE" in
+		''|*[!0-9]*) SIZE=0 ;;
+	esac
+	PUBLISHED=$(sed -n 's/.*"published_at": *"\([^"]*\)".*/\1/p' "$_obj" | head -n1)
+	if grep -q '"prerelease": *true' "$_obj"; then PRERELEASE=1; else PRERELEASE=0; fi
+
+	case "$DIGEST" in
+		????????????????????????????????????????????????????????????????) ;;
+		*) DIGEST='' ;;
+	esac
+	return 0
+}
+
+write_cache() {
+	mkdir_run
+	printf '{"tag":%s,"asset":%s,"digest":%s,"size":%s,"published":%s,"checked":%s,"prerelease":%s,"arch":%s}\n' \
+		"$(json_quote "$TAG")" "$(json_quote "$ASSET")" "$(json_quote "$DIGEST")" \
+		"${SIZE:-0}" "$(json_quote "${PUBLISHED:-}")" "$(date +%s)" \
+		"${PRERELEASE:-0}" "$(json_quote "$ARCH")" \
+		> "$CACHE_FILE.tmp" && mv "$CACHE_FILE.tmp" "$CACHE_FILE"
+}
+
+installed_version() {
+	[ -x "$BIN" ] || return 0
+	"$BIN" --version 2>/dev/null | awk '{print $3; exit}'
+}
+
+pid_of() {
+	pidof cloudflared 2>/dev/null | awk '{print $1}'
+}
+
+# ---------------------------------------------------------------- commands
+
+cmd_status() {
+	mkdir_run
+	_ver=$(installed_version)
+	_bak=''
+	[ -x "$BACKUP" ] && _bak=$("$BACKUP" --version 2>/dev/null | awk '{print $3; exit}')
+	_pid=$(pid_of)
+	if [ -n "$_pid" ]; then _running=1; else _running=0; _pid=''; fi
+	if [ -x /etc/init.d/cloudflared ] && /etc/init.d/cloudflared enabled >/dev/null 2>&1; then
+		_enabled=1
+	else
+		_enabled=0
+	fi
+	if [ -s "$TOKEN_FILE" ]; then _token=1; else _token=0; fi
+	if [ -s "$CONFIG_FILE" ]; then _conf=1; else _conf=0; fi
+	if [ "$_conf" = '1' ] && grep -Eq '^[[:space:]]*tunnel:[[:space:]]*[^#[:space:]]' "$CONFIG_FILE"; then
+		_confvalid=1
+	else
+		_confvalid=0
+	fi
+	_state=$(state_get state); [ -n "$_state" ] || _state='idle'
+	_msg=$(state_get message)
+
+	printf '{"ok":true,"running":%s,"pid":%s,"enabled":%s,"version":%s,"backup_version":%s,' "$_running" "$(json_quote "$_pid")" "$_enabled" "$(json_quote "$_ver")" "$(json_quote "$_bak")"
+	_checked=$(cache_num checked); [ -n "$_checked" ] || _checked=0
+	_lsize=$(cache_num size); [ -n "$_lsize" ] || _lsize=0
+	printf '"latest":%s,"latest_checked":%s,"latest_size":%s,"latest_digest":%s,' \
+		"$(json_quote "$(cache_str tag)")" "$_checked" "$_lsize" "$(json_quote "$(cache_str digest)")"
+	printf '"channel":%s,"arch":%s,"asset":%s,"mode":%s,"token_set":%s,"config_set":%s,"config_valid":%s,' \
+		"$(json_quote "$(uci_val update channel stable)")" "$(json_quote "$(arch_get)")" \
+		"$(json_quote "cloudflared-linux-$(arch_get)")" "$(json_quote "$(uci_val main mode token)")" \
+		"$_token" "$_conf" "$_confvalid"
+	printf '"auto_update":%s,"verify_sha256":%s,"update_state":%s,"update_message":%s,"last_update":%s,"binary":%s}\n' \
+		"$(uci_val update auto_update 0)" "$(uci_val update verify_sha256 1)" \
+		"$(json_quote "$_state")" "$(json_quote "$_msg")" \
+		"$(json_quote "$(uci_val update last_update '')")" "$(json_quote "$BIN")"
+}
+
+cmd_check() {
+	mkdir_run
+	if ! resolve_release "${1:-channel}"; then
+		json_fail "$RESOLVE_ERROR"
+	fi
+	write_cache
+	_old=$(installed_version)
+	if [ "$_old" = "$TAG" ] && [ -x "$BIN" ]; then _avail=0; else _avail=1; fi
+	printf '{"ok":true,"tag":%s,"asset":%s,"digest":%s,"size":%s,"published":%s,"prerelease":%s,"arch":%s,"installed":%s,"update_available":%s,"checked":%s}\n' \
+		"$(json_quote "$TAG")" "$(json_quote "$ASSET")" "$(json_quote "$DIGEST")" \
+		"${SIZE:-0}" "$(json_quote "${PUBLISHED:-}")" "${PRERELEASE:-0}" \
+		"$(json_quote "$ARCH")" "$(json_quote "$_old")" "$_avail" "$(date +%s)"
+}
+
+cmd_log() {
+	if [ -s "$LOG_FILE" ]; then
+		tail -n 200 "$LOG_FILE"
+	else
+		printf '%s\n' '（暂无升级日志。点击「检查最新版本」或「升级到最新版」开始。）'
+	fi
+}
+
+cmd_cron_setup() {
+	_cron=/etc/crontabs/root
+	mkdir -p /etc/crontabs
+	[ -f "$_cron" ] || : > "$_cron"
+	grep -vF '/usr/sbin/cloudflared-update' "$_cron" > "$_cron.tmp" || true
+	mv "$_cron.tmp" "$_cron"
+	if [ "$(uci_val update auto_update 0)" = '1' ]; then
+		_sched=$(uci_val update auto_update_time '30 3 * * *')
+		if ! printf '%s' "$_sched" | grep -Eq '^[0-9*/,A-Za-z -]+$'; then
+			_sched='30 3 * * *'
+			logger -t cloudflared -p user.warn 'invalid auto_update_time, falling back to 30 3 * * *'
+		fi
+		printf '%s /usr/sbin/cloudflared-update --cron\n' "$_sched" >> "$_cron"
+	fi
+	chmod 600 "$_cron"
+	/etc/init.d/cron reload >/dev/null 2>&1 || true
+	printf 'cron setup done\n'
+}
+
+cmd_start_update() {
+	mkdir_run
+	_mode='channel'
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--latest) _mode='latest' ;;
+			--channel) _mode='channel' ;;
+			--version)
+				shift
+				_tag=${1:-}
+				[ -n "$_tag" ] || json_fail '缺少版本号'
+				valid_tag "$_tag" || json_fail '版本号含有非法字符'
+				_mode="version:$_tag" ;;
+			--force) ;;
+			*) ;;
+		esac
+		shift
+	done
+
+	_s=$(state_get state)
+	if [ "$_s" = 'running' ] || [ "$_s" = 'pending' ]; then
+		_p=$(state_pid)
+		if [ -n "$_p" ] && [ "$_p" != '0' ] && kill -0 "$_p" 2>/dev/null; then
+			json_fail '已有升级任务正在运行，请等待完成'
+		fi
+	fi
+
+	[ -s "$LOG_FILE" ] && mv "$LOG_FILE" "$LOG_OLD"
+	: > "$LOG_FILE"
+	TAG=''
+	STATE_PID=0
+	write_state pending '升级任务已排队'
+	log_line "排队升级任务 (mode=$_mode)"
+
+	if command -v setsid >/dev/null 2>&1; then
+		setsid /usr/sbin/cloudflared-ctl update-run --mode "$_mode" --force \
+			</dev/null >/dev/null 2>&1 &
+	else
+		( trap '' HUP; exec /usr/sbin/cloudflared-ctl update-run --mode "$_mode" --force ) \
+			</dev/null >/dev/null 2>&1 &
+	fi
+	printf '{"ok":true,"state":"pending","mode":%s}\n' "$(json_quote "$_mode")"
+}
+
+cmd_rollback() {
+	mkdir_run
+	[ -x "$BACKUP" ] || json_fail '没有可用的备份版本（/usr/sbin/cloudflared.bak）'
+	log_line '回滚到上一版本...'
+	/etc/init.d/cloudflared stop >/dev/null 2>&1 || true
+	sleep 1
+	cp "$BACKUP" "$STAGE" && chmod 755 "$STAGE" && mv "$STAGE" "$BIN" || json_fail '回滚失败：无法替换二进制'
+	sync
+	/etc/init.d/cloudflared start >/dev/null 2>&1 || true
+	_ver=$(installed_version)
+	write_state done "已回滚到 $_ver"
+	log_line "已回滚到 $_ver"
+	printf '{"ok":true,"version":%s}\n' "$(json_quote "$_ver")"
+}
+
+stop_service() {
+	[ "$SERVICE_STOPPED" = '1' ] && return 0
+	log_line '停止隧道服务...'
+	/etc/init.d/cloudflared stop >/dev/null 2>&1 || true
+	sleep 1
+	SERVICE_STOPPED=1
+}
+
+start_service() {
+	log_line '启动隧道服务...'
+	if /etc/init.d/cloudflared start >/dev/null 2>&1; then
+		SERVICE_STOPPED=0
+		sleep 2
+		if [ "$(uci_val main enabled 0)" = '1' ] && ! pidof cloudflared >/dev/null 2>&1; then
+			log_line 'WARN: 服务已启动但进程未运行，请检查 Token / config.yml 与系统日志'
+		fi
+		return 0
+	fi
+	log_line 'WARN: 服务启动失败，请检查配置'
+	return 1
+}
+
+cmd_update_run() {
+	_mode='channel'
+	_force=0
+	_restore=0
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--mode) shift; _mode=${1:-channel} ;;
+			--force) _force=1 ;;
+			--restore) _restore=1; _force=1 ;;
+			--cron) _mode='channel' ;;
+			*) ;;
+		esac
+		shift
+	done
+
+	mkdir_run
+	STATE_PID=$$
+	trap cleanup EXIT
+	trap on_signal INT TERM HUP
+
+	acquire_lock || { log_line 'ERROR: 另一个升级任务正在运行'; write_state error '另一个升级任务正在运行'; exit 1; }
+	write_state running '正在查询新版本'
+	log_line "开始升级检查 (mode=$_mode, force=$_force)"
+
+	if ! resolve_release "$_mode"; then
+		log_line "ERROR: $RESOLVE_ERROR"
+		write_state error "$RESOLVE_ERROR"
+		exit 1
+	fi
+	write_cache
+	_old=$(installed_version)
+	log_line "已安装: ${_old:-未安装}  目标: $TAG ($ASSET)"
+
+	if [ "$_force" != '1' ] && [ -x "$BIN" ] && [ "$_old" = "$TAG" ]; then
+		log_line '已是最新版本，无需升级'
+		write_state done "已是最新版本 $TAG"
+		exit 0
+	fi
+
+	_size_kb=$(( ${SIZE:-0} / 1024 ))
+	[ "$_size_kb" -gt 0 ] || _size_kb=40960
+	_tmp_kb=$(df -k /tmp 2>/dev/null | awk 'NR==2 {print $4}')
+	_mem_kb=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null)
+	_need_kb=$((_size_kb + 24576))
+
+	if [ -n "$_tmp_kb" ] && [ "$_tmp_kb" -lt "$_size_kb" ]; then
+		log_line "ERROR: /tmp 只剩 ${_tmp_kb} KB，下载需要 ${_size_kb} KB"
+		write_state error '/tmp 空间不足'
+		exit 1
+	fi
+	if [ -n "$_mem_kb" ] && [ "$_mem_kb" -lt "$_need_kb" ]; then
+		log_line "内存不足 (${_mem_kb} KB < ${_need_kb} KB)，先停止隧道再下载"
+		stop_service
+		_mem_kb=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null)
+		if [ -n "$_mem_kb" ] && [ "$_mem_kb" -lt "$_need_kb" ]; then
+			log_line "ERROR: 停止隧道后内存仍不足 (${_mem_kb} KB)"
+			write_state error '内存不足，已保留原版本'
+			exit 1
+		fi
+	fi
+
+	_tmpbin="$TMPD/cloudflared"
+	FETCH_TIMEOUT=600
+	log_line "下载 $ASSET ($(( ${SIZE:-0} / 1024 / 1024 )) MB)..."
+	write_state running "正在下载 $TAG"
+	fetch "$DOWNLOAD/$TAG/$ASSET" "$_tmpbin" || {
+		log_line 'ERROR: 下载失败'; write_state error '下载失败'; exit 1; }
+
+	_sum=$(sha256sum "$_tmpbin" | awk '{print $1}')
+	if [ "$(uci_val update verify_sha256 1)" = '1' ]; then
+		[ -n "$DIGEST" ] || { log_line 'ERROR: 该版本没有发布 SHA-256 摘要'; write_state error '缺少 SHA-256 摘要'; exit 1; }
+		[ "$_sum" = "$DIGEST" ] || {
+			log_line "ERROR: SHA-256 校验失败 (得到 $_sum)"; write_state error 'SHA-256 校验失败'; exit 1; }
+		log_line "SHA-256 校验通过: $_sum"
+	else
+		log_line "WARN: 已跳过 SHA-256 校验 (得到 $_sum)"
+	fi
+
+	chmod 755 "$_tmpbin"
+	_newver=$("$_tmpbin" --version 2>/dev/null | awk '{print $3; exit}')
+	[ -n "$_newver" ] || {
+		log_line 'ERROR: 下载的二进制无法运行（架构不匹配或下载不完整）'
+		write_state error '下载的二进制无法运行'
+		exit 1
+	}
+	log_line "新二进制自检: $_newver"
+
+	_bin_kb=$(df -k "$(dirname "$BIN")" 2>/dev/null | awk 'NR==2 {print $4}')
+	if [ -n "$_bin_kb" ] && [ "$_bin_kb" -lt "$_size_kb" ]; then
+		log_line "ERROR: $(dirname "$BIN") 只剩 ${_bin_kb} KB，无法安全暂存"
+		write_state error '存储空间不足'
+		exit 1
+	fi
+	cp "$_tmpbin" "$STAGE" && chmod 755 "$STAGE" && sync || {
+		log_line 'ERROR: 暂存新二进制失败'; write_state error '暂存失败'; exit 1; }
+
+	if [ -x "$BIN" ] && [ "$(uci_val update keep_backup 1)" = '1' ]; then
+		cp "$BIN" "$BACKUP" && chmod 755 "$BACKUP"
+		log_line '已备份当前版本'
+	fi
+
+	stop_service
+	write_state running '正在替换二进制'
+	if ! mv "$STAGE" "$BIN"; then
+		log_line 'ERROR: 替换二进制失败'
+		write_state error '替换二进制失败'
+		start_service
+		exit 1
+	fi
+	sync
+	start_service
+
+	_final=$(installed_version)
+	uci_set update last_update "$(date '+%Y-%m-%d %H:%M:%S')"
+	write_state done "已升级到 $_final"
+	log_line "升级完成: ${_old:-未安装} -> $_final"
+	if [ "$_restore" = '1' ]; then
+		/etc/init.d/cloudflared enable >/dev/null 2>&1 || true
+	fi
+	exit 0
+}
+
+cmd_help() {
+	cat <<'EOF'
+luci-app-cloudflared control plane
+
+  cloudflared-ctl status                  show a JSON status snapshot
+  cloudflared-ctl check [--refresh]       query the latest GitHub release
+  cloudflared-ctl log                     tail the upgrade log
+  cloudflared-ctl start-update --latest    one-click upgrade to the newest stable release
+  cloudflared-ctl start-update --version 2026.10.7
+  cloudflared-ctl update-run --force      synchronous upgrade (for SSH / cron)
+  cloudflared-ctl rollback                restore /usr/sbin/cloudflared.bak
+  cloudflared-ctl cron-setup              rebuild the cron entry from UCI
+  cloudflared-update --cron               cron entry point
+  cloudflared-update --restore            post-sysupgrade entry point
+
+LuCI: Services -> Cloudflared 隧道 -> 升级
+EOF
+}
+
+case "${1:-status}" in
+	status)       cmd_status ;;
+	check)        shift; cmd_check "$@" ;;
+	log)          cmd_log ;;
+	start-update) shift; cmd_start_update "$@" ;;
+	update-run)   shift; cmd_update_run "$@" ;;
+	rollback)     cmd_rollback ;;
+	cron-setup)   cmd_cron_setup ;;
+	cron-run)     cmd_update_run --mode channel ;;
+	restore)      cmd_update_run --mode channel --force --restore ;;
+	help|--help|-h) cmd_help ;;
+	*)            printf 'Unknown command: %s\n' "$1"; cmd_help; exit 1 ;;
+esac
+
+exit 0

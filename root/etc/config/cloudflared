@@ -1,0 +1,29 @@
+# UCI configuration for luci-app-cloudflared
+# Most options are edited from LuCI: Services -> Cloudflared 隧道
+
+config cloudflared 'main'
+	option enabled '0'
+	# token  = remotely managed tunnel (token saved in /etc/cloudflared/tunnel-token)
+	# config = locally managed tunnel (config.yml + credentials json)
+	option mode 'token'
+	option protocol 'auto'
+	option loglevel 'info'
+	option metrics_addr ''
+	option extra_args ''
+	option tune_rmem '1'
+	option config_file '/etc/cloudflared/config.yml'
+
+config update 'update'
+	# stable  = GitHub /releases/latest (recommended)
+	# preview = newest GitHub release, including pre-releases
+	# pinned  = always install pinned_version
+	option channel 'stable'
+	option pinned_version ''
+	option auto_update '0'
+	option auto_update_time '30 3 * * *'
+	# Optional GitHub token, raises the unauthenticated API rate limit (60/h -> 5000/h)
+	option github_token ''
+	option arch_override 'auto'
+	option verify_sha256 '1'
+	option keep_backup '1'
+	option last_update ''

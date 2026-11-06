@@ -1,0 +1,66 @@
+#!/bin/sh
+# First-boot / post-install housekeeping for luci-app-cloudflared.
+# Safe to run more than once.
+
+KEEP=/etc/sysupgrade.conf
+RCLOCAL=/etc/rc.local
+MARKER='luci-app-cloudflared'
+HOOK='/etc/cloudflared/post-upgrade.sh'
+
+mkdir -p /etc/cloudflared /var/run/cloudflared /etc/crontabs
+chmod 700 /etc/cloudflared
+chmod 755 /var/run/cloudflared
+
+[ -f /etc/cloudflared/config.yml ] || cp /etc/cloudflared/config.yml.example /etc/cloudflared/config.yml
+chmod 600 /etc/cloudflared/config.yml
+[ -f /etc/cloudflared/tunnel-token ] && chmod 600 /etc/cloudflared/tunnel-token
+
+# Make sure both UCI sections exist after a package upgrade.
+uci -q get cloudflared.main >/dev/null 2>&1 || {
+	uci -q set cloudflared.main='cloudflared'
+	uci -q set cloudflared.main.enabled='0'
+	uci -q set cloudflared.main.mode='token'
+}
+uci -q get cloudflared.update >/dev/null 2>&1 || {
+	uci -q set cloudflared.update='update'
+	uci -q set cloudflared.update.channel='stable'
+	uci -q set cloudflared.update.auto_update='0'
+	uci -q set cloudflared.update.verify_sha256='1'
+	uci -q set cloudflared.update.keep_backup='1'
+}
+uci -q commit cloudflared
+
+# sysupgrade replaces the root filesystem, including the ~40 MB binary.
+# Keep our small files so the boot hook can fetch the binary again.
+add_keep() {
+	[ -f "$KEEP" ] || : > "$KEEP"
+	grep -qxF "$1" "$KEEP" 2>/dev/null || printf '%s\n' "$1" >> "$KEEP"
+}
+add_keep '/etc/config/cloudflared'
+add_keep '/etc/cloudflared/'
+add_keep '/etc/init.d/cloudflared'
+add_keep '/etc/rc.local'
+add_keep '/etc/crontabs/root'
+add_keep '/usr/sbin/cloudflared-ctl'
+add_keep '/usr/sbin/cloudflared-update'
+add_keep '/usr/share/luci/menu.d/luci-app-cloudflared.json'
+add_keep '/usr/share/rpcd/acl.d/luci-app-cloudflared.json'
+add_keep '/www/luci-static/resources/view/cloudflared/'
+
+# One boot hook, idempotent. rc.local is preserved by sysupgrade.
+if [ -f "$RCLOCAL" ] && ! grep -qF "$MARKER" "$RCLOCAL"; then
+	grep -v '^exit 0[[:space:]]*$' "$RCLOCAL" > "$RCLOCAL.tmp" || true
+	mv "$RCLOCAL.tmp" "$RCLOCAL"
+	cat >> "$RCLOCAL" <<EOF
+
+# $MARKER: re-download cloudflared after sysupgrade
+[ -x '$HOOK' ] && '$HOOK'
+exit 0
+EOF
+	chmod 755 "$RCLOCAL"
+fi
+
+# rpcd reads ACL files at startup; reload so the menu and RPC work at once.
+/etc/init.d/rpcd restart >/dev/null 2>&1 || true
+
+exit 0

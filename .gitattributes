@@ -1,0 +1,10 @@
+# OpenWrt shell scripts must keep LF line endings.
+* text=auto eol=lf
+*.sh text eol=lf
+root/etc/init.d/* text eol=lf
+root/etc/uci-defaults/* text eol=lf
+root/usr/sbin/* text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.ipk binary

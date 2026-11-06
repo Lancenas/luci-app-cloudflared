@@ -1,0 +1,14 @@
+# Local build output
+*.ipk
+*.apk
+dist/
+build/
+bin/
+
+# Runtime leftovers
+*.log
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

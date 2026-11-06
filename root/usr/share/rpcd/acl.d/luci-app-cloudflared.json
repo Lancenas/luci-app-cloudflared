@@ -1,0 +1,54 @@
+{
+	"luci-app-cloudflared": {
+		"description": "Grant access to Cloudflared tunnel configuration and binary updates",
+		"read": {
+			"cgi-io": [ "exec", "download" ],
+			"uci": [ "cloudflared" ],
+			"ubus": {
+				"file": [ "read", "write", "stat", "list", "exec" ],
+				"uci": [ "get", "set", "commit", "apply", "add", "delete", "order" ],
+				"service": [ "list" ]
+			},
+			"file": {
+				"/etc/cloudflared/config.yml": [ "read", "write" ],
+				"/etc/cloudflared/config.yml.example": [ "read" ],
+				"/etc/cloudflared/tunnel-token": [ "write" ],
+				"/var/run/cloudflared/*": [ "read", "list" ],
+				"/usr/sbin/cloudflared-ctl status": [ "exec" ],
+				"/usr/sbin/cloudflared-ctl check": [ "exec" ],
+				"/usr/sbin/cloudflared-ctl check *": [ "exec" ],
+				"/usr/sbin/cloudflared-ctl log": [ "exec" ],
+				"/usr/sbin/cloudflared-ctl rollback": [ "exec" ],
+				"/usr/sbin/cloudflared-ctl start-update": [ "exec" ],
+				"/usr/sbin/cloudflared-ctl start-update *": [ "exec" ],
+				"/etc/init.d/cloudflared start": [ "exec" ],
+				"/etc/init.d/cloudflared stop": [ "exec" ],
+				"/etc/init.d/cloudflared restart": [ "exec" ]
+			}
+		},
+		"write": {
+			"cgi-io": [ "exec", "download" ],
+			"uci": [ "cloudflared" ],
+			"ubus": {
+				"file": [ "read", "write", "stat", "list", "exec" ],
+				"uci": [ "get", "set", "commit", "apply", "add", "delete", "order" ]
+			},
+			"file": {
+				"/etc/cloudflared/config.yml": [ "read", "write" ],
+				"/etc/cloudflared/config.yml.example": [ "read" ],
+				"/etc/cloudflared/tunnel-token": [ "write" ],
+				"/var/run/cloudflared/*": [ "read", "list" ],
+				"/usr/sbin/cloudflared-ctl status": [ "exec" ],
+				"/usr/sbin/cloudflared-ctl check": [ "exec" ],
+				"/usr/sbin/cloudflared-ctl check *": [ "exec" ],
+				"/usr/sbin/cloudflared-ctl log": [ "exec" ],
+				"/usr/sbin/cloudflared-ctl rollback": [ "exec" ],
+				"/usr/sbin/cloudflared-ctl start-update": [ "exec" ],
+				"/usr/sbin/cloudflared-ctl start-update *": [ "exec" ],
+				"/etc/init.d/cloudflared start": [ "exec" ],
+				"/etc/init.d/cloudflared stop": [ "exec" ],
+				"/etc/init.d/cloudflared restart": [ "exec" ]
+			}
+		}
+	}
+}

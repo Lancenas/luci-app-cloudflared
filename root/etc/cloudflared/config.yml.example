@@ -1,0 +1,17 @@
+# Locally managed tunnel example (LuCI -> 设置 -> 本地 config.yml)
+# Replace the UUID / hostname / service with your own values and put the
+# tunnel credentials JSON issued by `cloudflared tunnel create` into
+# /etc/cloudflared/<UUID>.json (chmod 600).
+#
+# tunnel: 00000000-0000-0000-0000-000000000000
+# credentials-file: /etc/cloudflared/00000000-0000-0000-0000-000000000000.json
+#
+# ingress:
+#   - hostname: router.example.com
+#     service: http://127.0.0.1:80
+#   - hostname: ssh.example.com
+#     service: ssh://127.0.0.1:22
+#   - service: http_status:404
+#
+# This file is a commented template. It is intentionally not a valid tunnel
+# config: LuCI will warn you until you fill it in (or switch to Token mode).

@@ -1,0 +1,40 @@
+{
+	"admin/services/cloudflared": {
+		"title": "Cloudflared 隧道",
+		"order": 85,
+		"action": {
+			"type": "firstchild"
+		},
+		"depends": {
+			"acl": [ "luci-app-cloudflared" ],
+			"uci": { "cloudflared": true }
+		}
+	},
+
+	"admin/services/cloudflared/status": {
+		"title": "状态",
+		"order": 10,
+		"action": {
+			"type": "view",
+			"path": "cloudflared/status"
+		}
+	},
+
+	"admin/services/cloudflared/settings": {
+		"title": "设置",
+		"order": 20,
+		"action": {
+			"type": "view",
+			"path": "cloudflared/settings"
+		}
+	},
+
+	"admin/services/cloudflared/update": {
+		"title": "升级",
+		"order": 30,
+		"action": {
+			"type": "view",
+			"path": "cloudflared/update"
+		}
+	}
+}

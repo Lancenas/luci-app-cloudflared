@@ -1,0 +1,16 @@
+#!/bin/sh
+# Compatibility entry point for cron, SSH and the post-sysupgrade hook.
+# The LuCI interface calls /usr/sbin/cloudflared-ctl directly.
+
+case "${1:-}" in
+	--cron)
+		shift
+		exec /usr/sbin/cloudflared-ctl cron-run "$@" ;;
+	--restore)
+		shift
+		exec /usr/sbin/cloudflared-ctl restore "$@" ;;
+	--help|-h|help)
+		exec /usr/sbin/cloudflared-ctl help ;;
+	*)
+		exec /usr/sbin/cloudflared-ctl update-run "$@" ;;
+esac

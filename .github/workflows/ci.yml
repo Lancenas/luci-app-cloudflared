@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: POSIX shell / JavaScript / JSON checks
+        run: sh scripts/check.sh
+
+      - name: ShellCheck (errors only)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck -s sh -S error \
+            root/etc/init.d/cloudflared \
+            root/etc/uci-defaults/90-cloudflared \
+            root/etc/cloudflared/post-upgrade.sh \
+            root/usr/sbin/cloudflared-ctl \
+            root/usr/sbin/cloudflared-update \
+            scripts/*.sh
+
+      - name: Build noarch ipk
+        run: sh scripts/make-ipk.sh
+
+      - name: Inspect ipk contents
+        run: |
+          ls -lh dist/*.ipk
+          ar t dist/*.ipk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-cloudflared-ipk
+          path: dist/*.ipk
+          if-no-files-found: error
