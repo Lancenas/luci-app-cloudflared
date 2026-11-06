@@ -199,7 +199,8 @@
         </div></div>
         <div class="field"><label>启用定时自动升级</label><div class="switch"><input type="checkbox" checked> 开启</div></div>
         <div class="field"><label>定时计划（cron 表达式）</label><div><input type="text" value="30 3 * * *"><div class="hint">默认每天 03:30，任务会先对比版本再决定是否下载。</div></div></div>
-        <div class="field"><label>架构覆盖</label><div><select><option>自动识别</option><option>amd64 (x86_64)</option><option>arm64 (aarch64)</option></select></div></div>
+        <div class="field"><label>下载镜像（可选）</label><div><input type="text" placeholder="https://gh-proxy.com/"><div class="hint">GitHub Release CDN 不通时填写镜像前缀；版本信息与 SHA-256 仍取自官方 API。</div></div></div>
+        <div class="field"><label>架构覆盖</label><div><select><option>自动识别</option><option>amd64 (x86_64)</option><option>arm64 (aarch64)</option><option>armhf / arm / 386</option></select></div></div>
         <div class="field"><label>校验官方 SHA-256</label><div class="switch"><input type="checkbox" checked> 开启</div></div>
         <div class="field"><label>保留上一版本备份</label><div class="switch"><input type="checkbox" checked> 开启</div></div>
 
@@ -246,6 +247,7 @@
           <div>发布包大小</div><div>35.9 MB</div>
           <div>官方 SHA-256</div><div><code>3df43aedc9ff291d…</code></div>
           <div>完整性校验</div><div>开启（校验 GitHub Release digest）</div>
+          <div>下载镜像</div><div>官方直连（未设置镜像）</div>
           <div>升级任务状态</div><div><span class="badge warn">● 升级进行中</span></div>
           <div>任务消息</div><div>正在下载 2026.10.7</div>
           <div>上次升级时间</div><div>2026-10-30 03:30:18</div>

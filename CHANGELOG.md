@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.1.0 (2026-11-06)
+
+ARM 真机测试（Kwrt 24.10.0-rc2 / Thunder OneCloud / `armv7l` / `arm_cortex-a5_vfpv4`）后的功能版本：
+
+- **按架构分开打包发布**：Release 现在提供 1 个通用包 + 5 个架构离线包（`amd64` / `arm64` / `armhf` / `arm` / `386`）。架构包内置对应官方二进制（Release 时固定版本，记录于 `/etc/cloudflared/package-arch`），装上即用，无需访问 GitHub Release CDN；`postinst` 核对 `uname -m`，装错架构会移除内置二进制并复位 `arch_override=auto`。
+- **新增 `scripts/fetch-binaries.sh`**：从 GitHub API 拉取 5 个架构资产与官方 `digest`，下载后逐一校验 SHA-256，产出 `dist/bin/manifest.json`；`make-ipk.sh --all` 构建时二次校验，摘要不符即中止。支持 `MIRROR=` / `TAG=` / `ARCHES=`。
+- **新增下载镜像选项 `download_mirror`**：CDN 不通时可在 LuCI 设置页填镜像前缀（如 `https://gh-proxy.com/`）；版本元数据与 SHA-256 仍来自官方 API，校验不放松。升级页显示当前下载源。
+- **下载卡死保护**：`curl` 增加低速检测（60 秒内 < 2 KB/s 即失败）并把总超时从 600s 收敛到 300s，失败时在状态与日志里提示改用镜像或架构离线包。
+- **旧配置兼容**：uci-defaults 现在补齐 `main` / `update` 段的所有选项（不覆盖已有值），并把旧插件留在 `cloudflared.config.token` 的明文 Token 静默迁入 0600 的 `tunnel-token`（保留原 UCI 值，不破坏其他包）。
+- **sysupgrade**：安装架构离线包时把内置二进制一并加入保留清单；通用包行为不变（由 `rc.local` 钩子重新下载）。
+- CI 增加 tag / 手动触发时的多架构包构建与产物上传；README 补充选型表、下载镜像与排障。
+
+真机验证：ARMv7 上 `armhf` 资产识别与官方二进制运行（`cloudflared 2026.10.7`）、LuCI 三页/JS/ACL、通用包与架构离线包安装、镜像下载通道均通过。
+
 ## 1.0.1 (2026-11-06)
 
 真机安装测试后修复（Kwrt 24.10-SNAPSHOT / x86_64 / QEMU，opkg + nginx + LuCI 26.x）：

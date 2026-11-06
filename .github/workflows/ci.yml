@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [ main, master ]
+    tags: [ 'v*' ]
   pull_request:
   workflow_dispatch:
 
@@ -27,7 +28,7 @@ jobs:
             root/usr/sbin/cloudflared-update \
             scripts/*.sh
 
-      - name: Build noarch ipk
+      - name: Build generic ipk
         run: sh scripts/make-ipk.sh
 
       - name: Inspect ipk contents
@@ -39,5 +40,36 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: luci-app-cloudflared-ipk
+          path: dist/*.ipk
+          if-no-files-found: error
+
+  # Per-architecture bundles embed the ~35 MB upstream binary, so download it
+  # only for release tags / manual runs instead of on every push.
+  bundles:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch official cloudflared binaries (sha256 verified)
+        run: sh scripts/fetch-binaries.sh
+
+      - name: Build generic + all architecture bundles
+        run: sh scripts/make-ipk.sh --all
+
+      - name: Verify every package
+        run: |
+          ls -lh dist/*.ipk
+          for f in dist/*.ipk; do
+            echo "-- $f"
+            tar -tzf "$f" | grep -qx './debian-binary'
+            tar -tzf "$f" | grep -qx './control.tar.gz'
+            tar -tzf "$f" | grep -qx './data.tar.gz'
+            ! tar -tzf "$f" | grep -qi paxheader
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-cloudflared-arch-ipks
           path: dist/*.ipk
           if-no-files-found: error

@@ -3,15 +3,18 @@
 # This Makefile works standalone: drop this repository into
 # <openwrt-buildroot>/package/luci-app-cloudflared and select
 # "LuCI -> 3. Applications -> luci-app-cloudflared" in menuconfig.
-# The package is architecture independent (scripts + LuCI JavaScript only).
+# The SDK package is architecture independent (scripts + LuCI JavaScript only).
 #
-# The cloudflared binary itself is NOT shipped: it is downloaded from the
-# official Cloudflare GitHub releases by the LuCI "Update" page.
+# The generic package does NOT ship the cloudflared binary: it is downloaded
+# from the official Cloudflare GitHub releases by the LuCI "Update" page.
+# Per-architecture offline bundles (with the official binary included) are
+# produced by `sh scripts/fetch-binaries.sh` + `sh scripts/make-ipk.sh --all`;
+# they need no SDK because the binary is a prebuilt upstream release asset.
 
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-cloudflared
-PKG_VERSION:=1.0.1
+PKG_VERSION:=1.1.0
 PKG_RELEASE:=1
 PKGARCH:=all
 PKG_LICENSE:=MIT

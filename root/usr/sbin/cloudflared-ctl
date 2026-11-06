@@ -201,14 +201,19 @@ fetch() {
 	_url=$1
 	_out=$2
 	_token=$(uci_val update github_token '')
+	# Abort a stalled download instead of waiting for --max-time: some networks
+	# accept the TLS connection but never deliver the GitHub release object.
+	_slow='--speed-limit 2048 --speed-time 60'
 	if command -v curl >/dev/null 2>&1; then
 		if [ -n "$_token" ]; then
-			curl -fsSL --connect-timeout 15 --max-time "$FETCH_TIMEOUT" \
+			# shellcheck disable=SC2086
+			curl -fsSL --connect-timeout 15 --max-time "$FETCH_TIMEOUT" $_slow \
 				-H "Authorization: Bearer $_token" \
 				-H 'Accept: application/vnd.github+json' \
 				-H "User-Agent: $UA" -o "$_out" "$_url" && return 0
 		else
-			curl -fsSL --connect-timeout 15 --max-time "$FETCH_TIMEOUT" \
+			# shellcheck disable=SC2086
+			curl -fsSL --connect-timeout 15 --max-time "$FETCH_TIMEOUT" $_slow \
 				-H 'Accept: application/vnd.github+json' \
 				-H "User-Agent: $UA" -o "$_out" "$_url" && return 0
 		fi
@@ -366,10 +371,11 @@ cmd_status() {
 		"$(json_quote "$(uci_val update channel stable)")" "$(json_quote "$(arch_get)")" \
 		"$(json_quote "cloudflared-linux-$(arch_get)")" "$(json_quote "$(uci_val main mode token)")" \
 		"$_token" "$_conf" "$_confvalid"
-	printf '"auto_update":%s,"verify_sha256":%s,"update_state":%s,"update_message":%s,"last_update":%s,"binary":%s}\n' \
+	printf '"auto_update":%s,"verify_sha256":%s,"update_state":%s,"update_message":%s,"last_update":%s,"download_mirror":%s,"binary":%s}\n' \
 		"$(uci_val update auto_update 0)" "$(uci_val update verify_sha256 1)" \
 		"$(json_quote "$_state")" "$(json_quote "$_msg")" \
-		"$(json_quote "$(uci_val update last_update '')")" "$(json_quote "$BIN")"
+		"$(json_quote "$(uci_val update last_update '')")" \
+		"$(json_quote "$(uci_val update download_mirror '')")" "$(json_quote "$BIN")"
 }
 
 cmd_check() {
@@ -556,11 +562,30 @@ cmd_update_run() {
 	fi
 
 	_tmpbin="$TMPD/cloudflared"
-	FETCH_TIMEOUT=600
-	log_line "下载 $ASSET ($(( ${SIZE:-0} / 1024 / 1024 )) MB)..."
+	FETCH_TIMEOUT=300
+	_dl_url="$DOWNLOAD/$TAG/$ASSET"
+	# GitHub release objects are served from a CDN that is unreachable on some
+	# networks (api.github.com still works). A user-supplied mirror prefix only
+	# affects the binary URL; the version metadata and sha256 digest still come
+	# from the official API, so a malicious mirror cannot ship a forged binary.
+	_mirror=$(uci_val update download_mirror '')
+	case "$_mirror" in
+		https://*|http://*) ;;
+		*) _mirror='' ;;
+	esac
+	_mb=$(( ${SIZE:-0} / 1024 / 1024 ))
+	if [ -n "$_mirror" ]; then
+		case "$_mirror" in */) ;; *) _mirror="$_mirror/" ;; esac
+		_dl_url="$_mirror$_dl_url"
+		log_line "下载 $ASSET (${_mb} MB)，镜像前缀 $_mirror"
+	else
+		log_line "下载 $ASSET (${_mb} MB)..."
+	fi
 	write_state running "正在下载 $TAG"
-	fetch "$DOWNLOAD/$TAG/$ASSET" "$_tmpbin" || {
-		log_line 'ERROR: 下载失败'; write_state error '下载失败'; exit 1; }
+	fetch "$_dl_url" "$_tmpbin" || {
+		log_line 'ERROR: 下载失败；若 GitHub Release CDN 不通，请在「升级设置 → 下载镜像」填写镜像前缀，或安装对应架构的离线包'
+		write_state error '下载失败（可设置下载镜像或使用架构离线包）'
+		exit 1; }
 
 	_sum=$(sha256sum "$_tmpbin" | awk '{print $1}')
 	if [ "$(uci_val update verify_sha256 1)" = '1' ]; then

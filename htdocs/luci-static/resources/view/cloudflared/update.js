@@ -56,6 +56,7 @@ return view.extend({
 			text('last', s.last_update || '—');
 			text('verify', s.verify_sha256 === '0' || s.verify_sha256 === 0
 				? '已关闭（不推荐）' : '开启（校验 GitHub Release digest）');
+			text('mirror', s.download_mirror || '官方直连（未设置镜像）');
 
 			var state = s.update_state || 'idle';
 			dom.content(fields.state, [
@@ -144,6 +145,7 @@ return view.extend({
 				row(_('发布包大小'), 'size', '—'),
 				row(_('官方 SHA-256'), 'digest', '—'),
 				row(_('完整性校验'), 'verify', '—'),
+				row(_('下载镜像'), 'mirror', '—'),
 				row(_('升级任务状态'), 'state', '—'),
 				row(_('任务消息'), 'message', '—'),
 				row(_('上次升级时间'), 'last', '—')

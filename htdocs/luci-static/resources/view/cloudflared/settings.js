@@ -96,6 +96,11 @@ return view.extend({
 		o.password = true;
 		o.rmempty = true;
 
+		o = s.option(form.Value, 'download_mirror', _('下载镜像（可选）'),
+			_('GitHub Release 资产的 CDN 不通时填写镜像前缀，例如 https://gh-proxy.com/ 。仅用于下载二进制；版本信息与 SHA-256 摘要仍从官方 API 获取并强制校验。也可以直接安装对应架构的离线包。'));
+		o.placeholder = 'https://gh-proxy.com/';
+		o.rmempty = true;
+
 		o = s.option(form.ListValue, 'arch_override', _('架构覆盖'),
 			_('自动识别 uname -m；异常设备可手动指定官方二进制后缀。mips 等架构官方不提供二进制。'));
 		o.value('auto', _('自动识别'));

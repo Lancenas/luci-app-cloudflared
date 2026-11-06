@@ -21,7 +21,9 @@
 | **备份 / 回滚** | 保留 `/usr/sbin/cloudflared.bak`，界面一键回滚 |
 | **两种隧道模式** | Token（远程管理）与 `config.yml`（本地管理，界面内可直接编辑） |
 | **架构自适应** | `amd64 / arm64 / armhf / arm / 386`，可手动覆盖；mips/riscv 等官方无二进制的架构明确报错 |
-| **固件升级恢复** | `sysupgrade.conf` 保留小文件，`rc.local` 钩子在首次开机等网络后自动重新下载二进制 |
+| **分架构离线包** | 每个架构单独发一个 ipk，内置经 SHA-256 校验的官方二进制，装上即用、不需访问 GitHub Release CDN；安装时校验 CPU 是否匹配 |
+| **下载镜像** | GitHub Release CDN 不通时，设置页可填镜像前缀（如 `https://gh-proxy.com/`）；版本信息与 SHA-256 仍来自官方 API |
+| **固件升级恢复** | `sysupgrade.conf` 保留小文件（架构包还保留内置二进制），`rc.local` 钩子在二进制缺失时等网络后重新下载 |
 | **命令行** | `cloudflared-ctl status/check/log/start-update/rollback`、`cloudflared-update --cron` |
 
 界面设计预览（离线可打开）：[docs/luci-preview.html](docs/luci-preview.html)。
@@ -63,36 +65,52 @@
 │   ├── settings.js                  # 设置页（UCI 表单 + Token / config.yml 编辑）
 │   └── update.js                    # 升级页（一键升级 + 实时日志）
 ├── scripts/
-│   ├── make-ipk.sh                  # 免 SDK 生成 noarch .ipk
+│   ├── fetch-binaries.sh            # 拉取并校验 5 个架构的官方 cloudflared
+│   ├── make-ipk.sh                  # 免 SDK 生成通用包 + 分架构离线包
 │   ├── install-to-router.sh         # SSH 直装（开发调试）
 │   ├── uninstall-from-router.sh
 │   └── check.sh                     # 本地静态检查
 ├── docs/luci-preview.html           # 界面设计预览
-└── .github/workflows/ci.yml         # shellcheck + 静态检查 + 打包
+└── .github/workflows/ci.yml         # shellcheck + 静态检查 + 分包构建
 ```
 
 ---
 
 ## 4. 安装
 
-### 4.1 直接安装 `.ipk`（OpenWrt 23.05 / 24.10，opkg）
+### 4.1 选择安装包（按架构分开发布，OpenWrt 23.05 / 24.10，opkg）
+
+自 **v1.1.0** 起，每个 Release 提供 **6 个包**：1 个通用包 + 5 个**内置官方 cloudflared 二进制**的架构离线包。选与你 CPU 对应的一个即可，不要同时装多个。
+
+| 包名后缀 | 适用 CPU / `DISTRIB_ARCH` | 内置二进制 | 说明 |
+| --- | --- | --- | --- |
+| `_all.ipk` | 任意（纯脚本，19 KB） | 否 | 装完到「升级」页点一次「升级到最新版」下载；适合 GitHub 下载通畅的设备 |
+| `_amd64.ipk` | `x86_64` / `amd64` | 是 | x86 软路由、PC、虚拟机 |
+| `_arm64.ipk` | `aarch64` / `arm64` | 是 | 64 位 ARM（树莓派 4/5、ARM 软路由） |
+| `_armhf.ipk` | `armv7l` / `armv8l`，`arm_cortex-a*` | 是 | 32 位 ARMv7 硬浮点（Thunder OneCloud 等），**本次 ARM 真机实测** |
+| `_arm.ipk` | `armv5*` / `armv6*` | 是 | 老 32 位 ARM |
+| `_386.ipk` | `i386`–`i686` | 是 | 32 位 x86 |
 
 ```sh
-# 从 Releases 下载（也可本地构建：sh scripts/make-ipk.sh）
-wget https://github.com/Lancenas/luci-app-cloudflared/releases/download/v1.0.1/luci-app-cloudflared_1.0.1-1_all.ipk
-opkg install luci-app-cloudflared_1.0.1-1_all.ipk
+# 以 ARMv7 路由器为例，用对应架构的离线包（无需访问 GitHub Release CDN）
+wget https://github.com/Lancenas/luci-app-cloudflared/releases/download/v1.1.0/luci-app-cloudflared_1.1.0-1_armhf.ipk
+opkg install luci-app-cloudflared_1.1.0-1_armhf.ipk
 # 依赖：luci-base rpcd-mod-file curl ca-bundle（一般已随 LuCI 装好）
 ```
 
-> ⚠️ **v1.0.0 已废弃**：该版本的 ipk 误用了 Debian `ar` 容器，opkg 会报 `Malformed package file`，在任何 OpenWrt 上都装不上；且 `check` 在 busybox awk 上解析失败。请使用 **v1.0.1 及以上**。
+架构包内置**未经修改**的官方二进制（Release 时固定版本，见包内 `/etc/cloudflared/package-arch` 的 `tag`/`sha256`），安装即可用，之后仍能通过界面一键升级。`postinst` 会核对 `uname -m`：装错架构时会删除内置二进制、把 `arch_override` 复位为 `auto` 并写入 syslog，避免留下无法运行的文件。安装匹配时则把 `arch_override` 锁定为该架构（可在设置页改）。
+
+> ⚠️ **v1.0.0 已废弃**：ipk 误用 Debian `ar` 容器，opkg 报 `Malformed package file`；且 `check` 在 busybox awk 上失败。请使用 **v1.1.0**（最低不低于 v1.0.1）。
 
 `.ipk` 的正确容器是 **gzip 压缩的 tar**（外层 `./debian-binary`、`./control.tar.gz`、`./data.tar.gz`），内部两个 tar 必须是纯 USTAR。`scripts/make-ipk.sh` 用 Python 生成全部归档，因此在 macOS 上也不会混入 bsdtar 的 PAX `PaxHeader/` 条目——那种条目会被 opkg 当成真实文件，造成「安装成功但一个文件都没落地」。
 
 仓库：<https://github.com/Lancenas/luci-app-cloudflared> · [Releases](https://github.com/Lancenas/luci-app-cloudflared/releases)
 
-`postinst` 会自动执行 uci-defaults、重启 rpcd、enable 服务。菜单在 **Services → Cloudflared 隧道**。
+`postinst` 会自动执行 uci-defaults、重启 rpcd、enable 服务。菜单在 **Services → Cloudflared 隧道**。安装后 LuCI 旧会话会失效（rpcd 重启），重新登录一次即可。
 
-**真机验证**（Kwrt 24.10-SNAPSHOT / x86_64 / QEMU）：`opkg install` 落地 13 个文件且权限正确 → LuCI 三个页面与 4 个 JS 资源均 200 → `cgi-exec` 经 rpcd ACL 返回 status/log → 一键升级下载官方 `2026.10.7`（38 MB，SHA-256 校验通过）→ 降级到 `2026.10.6` 生成 `.bak` → 界面回滚恢复 `2026.10.7`。
+**真机验证**：
+- **x86_64**（Kwrt 24.10-SNAPSHOT / QEMU）：13 个文件与权限正确 → LuCI 三页 + 4 个 JS 均 200 → `cgi-exec` 经 rpcd ACL 返回 status/log → 一键升级 `2026.10.7`（38 MB，SHA-256 通过）→ 降级 `2026.10.6` 生成 `.bak` → 界面回滚恢复。
+- **ARMv7**（Kwrt 24.10.0-rc2 / Thunder OneCloud / `arm_cortex-a5_vfpv4`）：架构识别 `armhf`、资产 `cloudflared-linux-armhf`（35 MB）校验通过并在真机运行；LuCI 三页/JS/ACL 正常；架构离线包安装即用。该设备出口到 GitHub Release CDN 极慢，正是分架构离线包与下载镜像选项要解决的问题。
 
 ### 4.2 OpenWrt 25.12+（apk）或集成进固件
 
@@ -105,7 +123,7 @@ make menuconfig          # LuCI → 3. Applications → luci-app-cloudflared
 make package/luci-app-cloudflared/compile V=s
 ```
 
-`PKGARCH:=all`，任何目标架构都产出同一个包；`.apk` 由 SDK 自动产出。
+`PKGARCH:=all`，SDK 产出的是通用包（脚本 + LuCI，无二进制）；`.apk` 由 SDK 自动产出。按架构内置二进制的离线包不需要 SDK，用 `sh scripts/fetch-binaries.sh` + `sh scripts/make-ipk.sh --all` 生成，因为二进制是上游预编译资产。
 
 ### 4.3 开发直装（不编译）
 
@@ -139,7 +157,7 @@ LuCI「升级」按钮
             ├─ flock /var/run/cloudflared/update.lock （防并发）
             ├─ GitHub API /releases/latest → tag_name + 资产 digest/size
             ├─ 检查 /tmp 空间、MemAvailable、/usr/sbin 剩余空间
-            ├─ 下载 cloudflared-linux-<arch> 到 /tmp
+            ├─ 下载 cloudflared-linux-<arch> 到 /tmp（可选 download_mirror）
             ├─ sha256sum 对比官方 digest；再跑一次 --version 自检
             ├─ cp 到 /usr/sbin/cloudflared.new → 备份旧版 .bak → 停服务
             ├─ mv 原子替换 → sync → 启动服务
@@ -150,6 +168,8 @@ LuCI「升级」按钮
 - LuCI 轮询 `status` + `log`（2 秒），任务状态：`pending → running → done / error`。
 - 升级在后台运行，**关闭页面不会中断**；`flock` 保证 cron 与手动点击不会打架。
 - 中断（信号）时会自动把停掉的隧道重新拉起。
+- **GitHub Release CDN 不通时**：在「设置 → 升级设置 → 下载镜像」填镜像前缀（如 `https://gh-proxy.com/`）。镜像只作用于二进制下载 URL，版本元数据与 SHA-256 摘要仍来自 `api.github.com`，校验不会放松；也可以直接安装对应架构的离线包。
+- 下载停滞（60 秒内低于 2 KB/s）或总耗时超过 300 秒会主动失败并在状态/日志里给出提示，不会无限卡在「正在下载」。
 
 ### 支持的架构与资产
 
@@ -164,7 +184,7 @@ LuCI「升级」按钮
 
 ### sysupgrade 之后
 
-`/etc/sysupgrade.conf` 保留配置、Token、init 脚本、两个 CLI 与 LuCI 文件；`rc.local` 钩子检测到二进制缺失时，等待网络后调用 `cloudflared-update --restore` 重新下载并启动。
+`/etc/sysupgrade.conf` 保留配置、Token、init 脚本、两个 CLI 与 LuCI 文件；安装**架构离线包**时还会保留内置的 `/usr/sbin/cloudflared`（离线设备刷机后不用重新下载）。`rc.local` 钩子检测到二进制缺失时，等待网络后调用 `cloudflared-update --restore` 重新下载并启动。
 注意：sysupgrade 后包管理器数据库不会保留该包，建议刷机完成后重新安装一次 ipk/apk，使其成为受管包。
 
 ---
@@ -188,7 +208,8 @@ LuCI「升级」按钮
 | | `auto_update` | `0` | 定时升级开关 |
 | | `auto_update_time` | `30 3 * * *` | cron 表达式 |
 | | `github_token` | 空 | 提升 API 限流（可选） |
-| | `arch_override` | `auto` | 手动指定资产后缀 |
+| | `download_mirror` | 空 | Release 资产下载镜像前缀，如 `https://gh-proxy.com/`（可选） |
+| | `arch_override` | `auto` | 手动指定资产后缀；架构离线包安装时会锁定为对应架构 |
 | | `verify_sha256` | `1` | 校验官方 digest |
 | | `keep_backup` | `1` | 保留 `.bak` |
 | | `last_update` | 空 | 由升级器写入 |
@@ -225,6 +246,8 @@ logread -e cloudflared-update
 | 菜单不显示 | 确认 `/usr/share/rpcd/acl.d/luci-app-cloudflared.json` 存在且 `rpcd` 已重启；`uci show cloudflared` 能读到配置；浏览器强刷清 LuCI 缓存 |
 | 按钮报权限错误 | ACL 未生效，`/etc/init.d/rpcd restart`；确认 `rpcd-mod-file` 与 `luci-base`（cgi-io）已安装 |
 | 检查更新失败 | `curl -fsSL https://api.github.com/repos/cloudflare/cloudflared/releases/latest`；未认证 API 限流 60 次/小时，可填 GitHub Token |
+| 一直卡在「正在下载」/ 下载失败 | 设备到 GitHub Release CDN 不通：① 直接装对应架构的离线包（推荐）；② 在「设置 → 升级设置 → 下载镜像」填 `https://gh-proxy.com/` 等前缀。升级页会显示当前下载源 |
+| 装了架构包但没有二进制 | `uname -m` 与包架构不匹配，`postinst` 主动删除了内置二进制；`logread -e cloudflared` 有记录，换对应架构的包重装即可 |
 | 下载成功但服务不运行 | 看 `logread`；Token 是否粘贴、config.yml 是否填了 `tunnel:`、是否点了「启用隧道」 |
 | 提示架构不支持 | 官方没有 mips/riscv 二进制；确认 `uname -m` 与 `arch_override` |
 | 空间/内存不足 | 升级器会保留旧版本并写明缺多少 KB；清理 flash 或改用外置存储后重试 |
@@ -235,17 +258,23 @@ logread -e cloudflared-update
 ## 10. 开发
 
 ```sh
-sh scripts/check.sh         # sh -n / JS 语法 / JSON 校验
-sh scripts/make-ipk.sh      # 产出 dist/luci-app-cloudflared_1.0.1-1_all.ipk（gzip/tar + 纯 USTAR）
-tar -tzf dist/*.ipk         # 查看外层包内容
+sh scripts/check.sh                       # sh -n / JS 语法 / JSON 校验
+sh scripts/make-ipk.sh                    # 通用包 _all.ipk
+sh scripts/fetch-binaries.sh              # 拉取 5 个架构官方二进制并校验 SHA-256
+sh scripts/make-ipk.sh --all              # 通用包 + 5 个架构离线包
+sh scripts/make-ipk.sh --arch armhf       # 只构建指定架构包
+MIRROR=https://gh-proxy.com/ sh scripts/fetch-binaries.sh   # 本机下载不通时走镜像
+tar -tzf dist/luci-app-cloudflared_1.1.0-1_all.ipk         # 查看外层包内容
 ```
 
-CI 会跑静态检查、shellcheck（仅 error 级别）并产出 ipk 产物。UI 文案用 `_()` 包裹，便于后续补 `.po` 翻译。
+`scripts/fetch-binaries.sh` 从 GitHub API 读取每个资产的 `digest` 并逐一校验，产物在 `dist/bin/`（含 `manifest.json`，记录 tag / digest / size）；`--all` 构建时会再次校验，任何一个二进制与官方摘要不符就中止。`dist/` 与 `dist/bin/` 已被 `.gitignore` 排除，不会把 100 MB 二进制提交进仓库。
+
+CI 在每次 push 跑静态检查、shellcheck（仅 error 级别）并产出通用包；在 `v*` tag 或手动触发时额外构建全部分架构包并上传产物。UI 文案用 `_()` 包裹，便于后续补 `.po` 翻译。
 
 ---
 
 ## 11. 许可与致谢
 
 - 本项目 MIT，见 [LICENSE](LICENSE)。
-- `cloudflared` 是 Cloudflare 的产品，二进制直接从其官方 GitHub Release 下载，本项目不分发、不修改。
+- `cloudflared` 是 Cloudflare 的产品，二进制均取自其官方 GitHub Release，本项目不修改；架构离线包只是把原样文件与官方 SHA-256 摘要一起打包，运行时的一键升级仍会校验官方 digest。
 - 设计参考：[Coralesoft/OpenwrtCloudflare](https://github.com/Coralesoft/OpenwrtCloudflare)、[OpenWrt LuCI](https://github.com/openwrt/luci) 的 JS view / ACL 规范。

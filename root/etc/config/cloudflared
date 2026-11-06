@@ -23,6 +23,10 @@ config update 'update'
 	option auto_update_time '30 3 * * *'
 	# Optional GitHub token, raises the unauthenticated API rate limit (60/h -> 5000/h)
 	option github_token ''
+	# Optional download mirror prefix for GitHub release assets, e.g.
+	# https://gh-proxy.com/  (only used for the binary; metadata + sha256
+	# still come from api.github.com). Leave empty when GitHub works directly.
+	option download_mirror ''
 	option arch_override 'auto'
 	option verify_sha256 '1'
 	option keep_backup '1'

@@ -15,20 +15,46 @@ chmod 755 /var/run/cloudflared
 chmod 600 /etc/cloudflared/config.yml
 [ -f /etc/cloudflared/tunnel-token ] && chmod 600 /etc/cloudflared/tunnel-token
 
-# Make sure both UCI sections exist after a package upgrade.
-uci -q get cloudflared.main >/dev/null 2>&1 || {
-	uci -q set cloudflared.main='cloudflared'
-	uci -q set cloudflared.main.enabled='0'
-	uci -q set cloudflared.main.mode='token'
+# Make sure both UCI sections and all their options exist after an upgrade,
+# including when another cloudflared package left a differently shaped config
+# behind (e.g. a single "config cloudflared 'config'" section). Never overwrite
+# an existing value.
+uci -q get cloudflared.main >/dev/null 2>&1 || uci -q set cloudflared.main='cloudflared'
+uci -q get cloudflared.update >/dev/null 2>&1 || uci -q set cloudflared.update='update'
+
+ensure_opt() {
+	uci -q get "cloudflared.$1.$2" >/dev/null 2>&1 || uci -q set "cloudflared.$1.$2=$3"
 }
-uci -q get cloudflared.update >/dev/null 2>&1 || {
-	uci -q set cloudflared.update='update'
-	uci -q set cloudflared.update.channel='stable'
-	uci -q set cloudflared.update.auto_update='0'
-	uci -q set cloudflared.update.verify_sha256='1'
-	uci -q set cloudflared.update.keep_backup='1'
-}
+for pair in \
+	'main enabled=0' 'main mode=token' 'main protocol=auto' 'main loglevel=info' \
+	'main metrics_addr=' 'main extra_args=' 'main tune_rmem=1' \
+	'main config_file=/etc/cloudflared/config.yml' \
+	'update channel=stable' 'update pinned_version=' 'update auto_update=0' \
+	'update auto_update_time=30 3 * * *' 'update github_token=' \
+	'update download_mirror=' 'update arch_override=auto' \
+	'update verify_sha256=1' 'update keep_backup=1' 'update last_update='
+do
+	_sec=${pair%% *}
+	_rest=${pair#* }
+	_opt=${_rest%%=*}
+	_val=${_rest#*=}
+	ensure_opt "$_sec" "$_opt" "$_val"
+done
 uci -q commit cloudflared
+
+# Migrate a plaintext token left in an older/other cloudflared UCI config into
+# our 0600 token file. Keep the original UCI value untouched so the other
+# package is not broken; the token never appears in our process command line.
+if [ ! -s /etc/cloudflared/tunnel-token ]; then
+	_old_token=$(uci -q get cloudflared.config.token 2>/dev/null)
+	[ -n "$_old_token" ] || _old_token=$(uci -q get cloudflared.@cloudflared[0].token 2>/dev/null)
+	if [ -n "$_old_token" ]; then
+		umask 077
+		printf '%s\n' "$_old_token" > /etc/cloudflared/tunnel-token
+		chmod 600 /etc/cloudflared/tunnel-token
+		umask 022
+	fi
+fi
 
 # sysupgrade replaces the root filesystem, including the ~40 MB binary.
 # Keep our small files so the boot hook can fetch the binary again.
@@ -46,6 +72,12 @@ add_keep '/usr/sbin/cloudflared-update'
 add_keep '/usr/share/luci/menu.d/luci-app-cloudflared.json'
 add_keep '/usr/share/rpcd/acl.d/luci-app-cloudflared.json'
 add_keep '/www/luci-static/resources/view/cloudflared/'
+
+# Per-architecture packages ship the ~35 MB binary inside the ipk. Keep it
+# across sysupgrade too, so an offline router does not have to re-download it.
+# The generic "all" package has no bundled binary and keeps the old behaviour
+# (the rc.local hook re-downloads it after a sysupgrade).
+[ -f /etc/cloudflared/package-arch ] && add_keep '/usr/sbin/cloudflared'
 
 # One boot hook, idempotent. rc.local is preserved by sysupgrade.
 if [ -f "$RCLOCAL" ] && ! grep -qF "$MARKER" "$RCLOCAL"; then
