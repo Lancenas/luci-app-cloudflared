@@ -1,120 +1,124 @@
 # luci-app-cloudflared
 
-**Cloudflared 隧道的 OpenWrt / LuCI 插件**：带完整 Web 界面，可在 LuCI 里一键把 `cloudflared` 升级到 Cloudflare 官方 GitHub 发布的最新版本。
+[简体中文 / 中文版](README.zh-CN.md) | **English**
 
-不同于纯 shell 安装脚本方案，本项目是一个**标准 OpenWrt 软件包**：UCI 配置 + procd 服务 + 现代 LuCI（JavaScript view）界面 + rpcd ACL，支持 `opkg` / `apk` 安装、SDK 编译、CI 产出 `.ipk`。
+**OpenWrt / LuCI app for Cloudflared Tunnel** — a full web UI with one-click upgrades of `cloudflared` to the latest official Cloudflare GitHub release. · [中文版](README.zh-CN.md)
 
-> 参考了 [Coralesoft/OpenwrtCloudflare](https://github.com/Coralesoft/OpenwrtCloudflare) 的安装/校验思路（GitHub Release digest 校验、`flock` 防并发、`/tmp` 与 flash 空间检查、sysupgrade 恢复），并在此基础上补了 LuCI 界面、UCI 配置模型、后台升级任务、备份回滚与定时升级。
+Unlike shell-only installers, this project is a **standard OpenWrt package**: UCI configuration + a procd service + modern LuCI (JavaScript views) + rpcd ACL. It can be installed with `opkg` / `apk`, built with the OpenWrt SDK, and CI publishes `.ipk` artifacts.
+
+> Inspired by [Coralesoft/OpenwrtCloudflare](https://github.com/Coralesoft/OpenwrtCloudflare) for its install/verification approach (GitHub Release digest checks, a `flock` concurrency guard, `/tmp` and flash space checks, sysupgrade restore). This project adds a LuCI interface, a UCI configuration model, background upgrade jobs, backup/rollback and scheduled upgrades.
+
+UI design preview (opens offline): [docs/luci-preview.html](docs/luci-preview.html).
 
 ---
 
-## 1. 功能
+## 1. Features
 
-| 能力 | 说明 |
+| Capability | Description |
 | --- | --- |
-| **LuCI 界面** | 服务菜单下三个页面：`状态` / `设置` / `升级` |
-| **一键升级最新版** | 「升级到最新版（stable）」直接读 GitHub `releases/latest`，后台下载 → SHA-256 校验 → 原子替换 → 重启隧道 |
-| **实时日志** | 升级日志流式落盘 `/var/run/cloudflared/update.log`，LuCI 每 2 秒轮询显示，刷新页面也不丢进度 |
-| **多通道** | `stable` / `preview`（含预发布）/ `pinned`（锁定版本），另可指定任意 tag 升级 |
-| **定时升级** | UCI 开关 + cron 表达式，自动对比版本后再下载（不做无意义的流量消耗） |
-| **安全** | 校验 GitHub Release 资产 `digest: sha256:...`；Token 存 `/etc/cloudflared/tunnel-token`（0600），用 `--token-file` 传入，不出现在 `ps` / UCI |
-| **备份 / 回滚** | 保留 `/usr/sbin/cloudflared.bak`，界面一键回滚 |
-| **两种隧道模式** | Token（远程管理）与 `config.yml`（本地管理，界面内可直接编辑） |
-| **架构自适应** | `amd64 / arm64 / armhf / arm / 386`，可手动覆盖；mips/riscv 等官方无二进制的架构明确报错 |
-| **分架构离线包** | 每个架构单独发一个 ipk，内置经 SHA-256 校验的官方二进制，装上即用、不需访问 GitHub Release CDN；安装时校验 CPU 是否匹配 |
-| **下载镜像** | GitHub Release CDN 不通时，设置页可填镜像前缀（如 `https://gh-proxy.com/`）；版本信息与 SHA-256 仍来自官方 API |
-| **固件升级恢复** | `sysupgrade.conf` 保留小文件（架构包还保留内置二进制），`rc.local` 钩子在二进制缺失时等网络后重新下载 |
-| **命令行** | `cloudflared-ctl status/check/log/start-update/rollback`、`cloudflared-update --cron` |
-
-界面设计预览（离线可打开）：[docs/luci-preview.html](docs/luci-preview.html)。
+| **LuCI interface** | Three pages under the Services menu: `Status` / `Settings` / `Upgrade` |
+| **One-click latest upgrade** | "Upgrade to latest (stable)" reads GitHub `releases/latest`, then downloads in the background → verifies SHA-256 → atomically replaces the binary → restarts the tunnel |
+| **Live log** | Upgrade log streamed to `/var/run/cloudflared/update.log`, polled by LuCI every 2 seconds; progress survives page reloads |
+| **Release channels** | `stable` / `preview` (includes prereleases) / `pinned` (locked version), plus upgrading to any explicit tag |
+| **Scheduled upgrades** | UCI toggle + cron expression; versions are compared before downloading, so no traffic is wasted |
+| **Security** | Verifies the GitHub Release asset `digest: sha256:...`; the Token is stored in `/etc/cloudflared/tunnel-token` (0600) and passed with `--token-file`, so it never appears in `ps` or UCI |
+| **Backup / rollback** | Keeps `/usr/sbin/cloudflared.bak`; one-click rollback from the UI |
+| **Two tunnel modes** | Token (remotely managed) and `config.yml` (locally managed, editable directly in the UI) |
+| **Architecture detection** | `amd64 / arm64 / armhf / arm / 386`, with manual override; architectures without an official binary (mips, riscv, ...) fail with a clear message |
+| **Per-architecture offline packages** | One ipk per architecture, bundling a SHA-256-verified official binary — ready to use without reaching the GitHub Release CDN; the CPU is checked at install time |
+| **Download mirror** | When the GitHub Release CDN is unreachable, set a mirror prefix in Settings (e.g. `https://gh-proxy.com/`); release metadata and the SHA-256 digest still come from the official API |
+| **Survives firmware upgrades** | `sysupgrade.conf` keeps the small files (architecture packages also keep the bundled binary); an `rc.local` hook re-downloads a missing binary once the network is up |
+| **Command line** | `cloudflared-ctl status/check/log/start-update/rollback`, `cloudflared-update --cron` |
 
 ---
 
-## 2. 与参考项目的差异
+## 2. Comparison with the reference project
 
-| 维度 | Coralesoft/OpenwrtCloudflare | 本项目 |
+| Aspect | Coralesoft/OpenwrtCloudflare | This project |
 | --- | --- | --- |
-| 形态 | 两个交互式 shell 脚本 | OpenWrt 软件包（ipk / SDK）+ LuCI 应用 |
-| 配置 | `/etc/cloudflared/*` 文件 + 生成的 init 脚本 | UCI `/etc/config/cloudflared`，procd reload trigger |
-| 界面 | 无 | 3 个 LuCI 页面（JS view + ACL + menu.d） |
-| 升级 | SSH 跑 `/usr/sbin/cloudflared-update`，或 cron | 界面按钮 + 后台任务 + 实时日志 + 状态轮询 |
-| 架构 | aarch64 / x86_64 | 另加 armhf / arm / 386，并支持 `arch_override` |
-| 版本策略 | 固定 latest | stable / preview / pinned / 指定 tag |
-| 回滚 | 无（失败时恢复旧二进制靠中断处理） | 保留 `.bak`，界面一键回滚 |
-| 校验 | GitHub digest | 同上，另加二进制自检 `--version` 与可选跳过开关 |
+| Form | Two interactive shell scripts | OpenWrt package (ipk / SDK) + LuCI application |
+| Configuration | `/etc/cloudflared/*` files + a generated init script | UCI `/etc/config/cloudflared` with a procd reload trigger |
+| Interface | None | 3 LuCI pages (JS views + ACL + menu.d) |
+| Upgrading | Run `/usr/sbin/cloudflared-update` over SSH, or cron | UI button + background job + live log + status polling |
+| Architectures | aarch64 / x86_64 | Also armhf / arm / 386, plus `arch_override` |
+| Version policy | Fixed to latest | stable / preview / pinned / explicit tag |
+| Rollback | None (interrupted runs try to restore the old binary) | Keeps `.bak`, one-click rollback in the UI |
+| Verification | GitHub digest | Same, plus a `--version` self-check and an optional skip switch |
 
 ---
 
-## 3. 目录结构
+## 3. Repository layout
 
 ```
 .
-├── Makefile                         # OpenWrt SDK 包定义（PKGARCH:=all）
-├── root/                            # 安装到路由器 / 的文件树
-│   ├── etc/config/cloudflared       # UCI 默认配置（conffile）
-│   ├── etc/init.d/cloudflared       # procd 服务
+├── README.md                        # Documentation (English, this file)
+├── README.zh-CN.md                  # Documentation (Simplified Chinese)
+├── Makefile                         # OpenWrt SDK package definition (PKGARCH:=all)
+├── root/                            # File tree installed on the router at /
+│   ├── etc/config/cloudflared       # UCI defaults (conffile)
+│   ├── etc/init.d/cloudflared       # procd service
 │   ├── etc/uci-defaults/90-cloudflared
 │   ├── etc/cloudflared/             # config.yml.example + post-upgrade.sh
-│   ├── usr/sbin/cloudflared-ctl     # 控制平面（状态/检查/升级/回滚/cron）
-│   ├── usr/sbin/cloudflared-update  # cron / SSH / 恢复入口
-│   ├── usr/share/luci/menu.d/       # 菜单（状态 / 设置 / 升级）
-│   └── usr/share/rpcd/acl.d/        # 最小权限 ACL
+│   ├── usr/sbin/cloudflared-ctl     # Control plane (status/check/upgrade/rollback/cron)
+│   ├── usr/sbin/cloudflared-update  # cron / SSH / restore entry point
+│   ├── usr/share/luci/menu.d/       # Menu entries (status / settings / upgrade)
+│   └── usr/share/rpcd/acl.d/        # Least-privilege ACL
 ├── htdocs/luci-static/resources/view/cloudflared/
-│   ├── common.js                    # 共享 RPC / DOM helper
-│   ├── status.js                    # 状态页
-│   ├── settings.js                  # 设置页（UCI 表单 + Token / config.yml 编辑）
-│   └── update.js                    # 升级页（一键升级 + 实时日志）
+│   ├── common.js                    # Shared RPC / DOM helpers
+│   ├── status.js                    # Status page
+│   ├── settings.js                  # Settings page (UCI form + Token / config.yml editors)
+│   └── update.js                    # Upgrade page (one-click upgrade + live log)
 ├── scripts/
-│   ├── fetch-binaries.sh            # 拉取并校验 5 个架构的官方 cloudflared
-│   ├── make-ipk.sh                  # 免 SDK 生成通用包 + 分架构离线包
-│   ├── install-to-router.sh         # SSH 直装（开发调试）
+│   ├── fetch-binaries.sh            # Download and verify the 5 official cloudflared binaries
+│   ├── make-ipk.sh                  # Build the generic and per-architecture ipks without the SDK
+│   ├── install-to-router.sh         # Direct SSH install (development)
 │   ├── uninstall-from-router.sh
-│   └── check.sh                     # 本地静态检查
-├── docs/luci-preview.html           # 界面设计预览
-└── .github/workflows/ci.yml         # shellcheck + 静态检查 + 分包构建
+│   └── check.sh                     # Local static checks
+├── docs/luci-preview.html           # UI design preview
+└── .github/workflows/ci.yml         # shellcheck + static checks + bundle builds
 ```
 
 ---
 
-## 4. 安装
+## 4. Installation
 
-### 4.1 选择安装包（按架构分开发布，OpenWrt 23.05 / 24.10，opkg）
+### 4.1 Choose a package (per-architecture releases; OpenWrt 23.05 / 24.10, opkg)
 
-自 **v1.1.0** 起，每个 Release 提供 **6 个包**：1 个通用包 + 5 个**内置官方 cloudflared 二进制**的架构离线包。选与你 CPU 对应的一个即可，不要同时装多个。
+Since **v1.1.0**, every Release ships **6 packages**: one generic package plus five per-architecture offline packages that **bundle the official cloudflared binary**. Install the one matching your CPU; do not install several at once.
 
-| 包名后缀 | 适用 CPU / `DISTRIB_ARCH` | 内置二进制 | 说明 |
+| Filename suffix | CPU / `DISTRIB_ARCH` | Bundled binary | Notes |
 | --- | --- | --- | --- |
-| `_all.ipk` | 任意（纯脚本，19 KB） | 否 | 装完到「升级」页点一次「升级到最新版」下载；适合 GitHub 下载通畅的设备 |
-| `_amd64.ipk` | `x86_64` / `amd64` | 是 | x86 软路由、PC、虚拟机 |
-| `_arm64.ipk` | `aarch64` / `arm64` | 是 | 64 位 ARM（树莓派 4/5、ARM 软路由） |
-| `_armhf.ipk` | `armv7l` / `armv8l`，`arm_cortex-a*` | 是 | 32 位 ARMv7 硬浮点（Thunder OneCloud 等），**本次 ARM 真机实测** |
-| `_arm.ipk` | `armv5*` / `armv6*` | 是 | 老 32 位 ARM |
-| `_386.ipk` | `i386`–`i686` | 是 | 32 位 x86 |
+| `_all.ipk` | Any (scripts only, 19 KB) | No | After installing, click "Upgrade to latest" on the Upgrade page once; best for devices with good GitHub connectivity |
+| `_amd64.ipk` | `x86_64` / `amd64` | Yes | x86 routers, PCs, VMs |
+| `_arm64.ipk` | `aarch64` / `arm64` | Yes | 64-bit ARM (Raspberry Pi 4/5, ARM routers) |
+| `_armhf.ipk` | `armv7l` / `armv8l`, `arm_cortex-a*` | Yes | 32-bit ARMv7 hard-float (Thunder OneCloud, etc.), **verified on a real ARM device** |
+| `_arm.ipk` | `armv5*` / `armv6*` | Yes | Older 32-bit ARM |
+| `_386.ipk` | `i386`–`i686` | Yes | 32-bit x86 |
 
 ```sh
-# 以 ARMv7 路由器为例，用对应架构的离线包（无需访问 GitHub Release CDN）
+# Example: an ARMv7 router using its matching offline package (no GitHub Release CDN needed)
 wget https://github.com/Lancenas/luci-app-cloudflared/releases/download/v1.1.0/luci-app-cloudflared_1.1.0-1_armhf.ipk
 opkg install luci-app-cloudflared_1.1.0-1_armhf.ipk
-# 依赖：luci-base rpcd-mod-file curl ca-bundle（一般已随 LuCI 装好）
+# Dependencies: luci-base rpcd-mod-file curl ca-bundle (normally already present with LuCI)
 ```
 
-架构包内置**未经修改**的官方二进制（Release 时固定版本，见包内 `/etc/cloudflared/package-arch` 的 `tag`/`sha256`），安装即可用，之后仍能通过界面一键升级。`postinst` 会核对 `uname -m`：装错架构时会删除内置二进制、把 `arch_override` 复位为 `auto` 并写入 syslog，避免留下无法运行的文件。安装匹配时则把 `arch_override` 锁定为该架构（可在设置页改）。
+Architecture packages bundle the **unmodified** official binary (pinned at release time; see `tag` / `sha256` in `/etc/cloudflared/package-arch` inside the package). They work immediately and can still be upgraded later from the UI. `postinst` checks `uname -m`: if the architecture does not match, it removes the bundled binary, resets `arch_override` to `auto` and writes a syslog warning, so no unusable file is left behind. When the architecture matches, `arch_override` is locked to it (changeable on the Settings page).
 
-> ⚠️ **v1.0.0 已废弃**：ipk 误用 Debian `ar` 容器，opkg 报 `Malformed package file`；且 `check` 在 busybox awk 上失败。请使用 **v1.1.0**（最低不低于 v1.0.1）。
+> ⚠️ **v1.0.0 is deprecated**: its ipk used a Debian `ar` container and opkg reported `Malformed package file`; `check` also failed on busybox awk. Use **v1.1.0** (v1.0.1 is the minimum usable version).
 
-`.ipk` 的正确容器是 **gzip 压缩的 tar**（外层 `./debian-binary`、`./control.tar.gz`、`./data.tar.gz`），内部两个 tar 必须是纯 USTAR。`scripts/make-ipk.sh` 用 Python 生成全部归档，因此在 macOS 上也不会混入 bsdtar 的 PAX `PaxHeader/` 条目——那种条目会被 opkg 当成真实文件，造成「安装成功但一个文件都没落地」。
+A valid `.ipk` is a **gzip-compressed tar** containing `./debian-binary`, `./control.tar.gz` and `./data.tar.gz`; the two inner tars must be pure USTAR. `scripts/make-ipk.sh` generates every archive with Python, so even on macOS no bsdtar PAX `PaxHeader/` entries sneak in — opkg treats those as real files, causing an "install succeeded but no files landed" failure.
 
-仓库：<https://github.com/Lancenas/luci-app-cloudflared> · [Releases](https://github.com/Lancenas/luci-app-cloudflared/releases)
+Repository: <https://github.com/Lancenas/luci-app-cloudflared> · [Releases](https://github.com/Lancenas/luci-app-cloudflared/releases)
 
-`postinst` 会自动执行 uci-defaults、重启 rpcd、enable 服务。菜单在 **Services → Cloudflared 隧道**。安装后 LuCI 旧会话会失效（rpcd 重启），重新登录一次即可。
+`postinst` runs uci-defaults, restarts rpcd and enables the service. The menu is at **Services → Cloudflared 隧道 (Cloudflared Tunnel)**. Existing LuCI sessions expire after installation (rpcd restart), so log in again.
 
-**真机验证**：
-- **x86_64**（Kwrt 24.10-SNAPSHOT / QEMU）：13 个文件与权限正确 → LuCI 三页 + 4 个 JS 均 200 → `cgi-exec` 经 rpcd ACL 返回 status/log → 一键升级 `2026.10.7`（38 MB，SHA-256 通过）→ 降级 `2026.10.6` 生成 `.bak` → 界面回滚恢复。
-- **ARMv7**（Kwrt 24.10.0-rc2 / Thunder OneCloud / `arm_cortex-a5_vfpv4`）：架构识别 `armhf`、资产 `cloudflared-linux-armhf`（35 MB）校验通过并在真机运行；LuCI 三页/JS/ACL 正常；架构离线包安装即用。该设备出口到 GitHub Release CDN 极慢，正是分架构离线包与下载镜像选项要解决的问题。
+**Verified on real hardware**:
+- **x86_64** (Kwrt 24.10-SNAPSHOT / QEMU): 13 files with correct permissions → all 3 LuCI pages and 4 JS assets return 200 → `cgi-exec` via rpcd ACL returns status/log → one-click upgrade to `2026.10.7` (38 MB, SHA-256 verified) → downgrade to `2026.10.6` creating `.bak` → rollback from the UI.
+- **ARMv7** (Kwrt 24.10.0-rc2 / Thunder OneCloud / `arm_cortex-a5_vfpv4`): detected `armhf`, asset `cloudflared-linux-armhf` (35 MB) verified and executed on the device; LuCI pages/JS/ACL all working; offline package usable immediately. This device's link to the GitHub Release CDN is extremely slow — exactly the problem solved by the per-architecture packages and the download mirror option.
 
-### 4.2 OpenWrt 25.12+（apk）或集成进固件
+### 4.2 OpenWrt 25.12+ (apk) or building into firmware
 
-把本仓库放进 SDK/buildroot：
+Place this repository in the SDK/buildroot:
 
 ```sh
 git clone https://github.com/Lancenas/luci-app-cloudflared.git \
@@ -123,158 +127,158 @@ make menuconfig          # LuCI → 3. Applications → luci-app-cloudflared
 make package/luci-app-cloudflared/compile V=s
 ```
 
-`PKGARCH:=all`，SDK 产出的是通用包（脚本 + LuCI，无二进制）；`.apk` 由 SDK 自动产出。按架构内置二进制的离线包不需要 SDK，用 `sh scripts/fetch-binaries.sh` + `sh scripts/make-ipk.sh --all` 生成，因为二进制是上游预编译资产。
+`PKGARCH:=all` means the SDK produces the generic package (scripts + LuCI, no binary); the SDK emits the `.apk` automatically. The per-architecture offline packages do not need the SDK — build them with `sh scripts/fetch-binaries.sh` + `sh scripts/make-ipk.sh --all`, since the binaries are upstream prebuilt assets.
 
-### 4.3 开发直装（不编译）
+### 4.3 Direct install for development (no build)
 
 ```sh
 sh scripts/install-to-router.sh root@192.168.1.1
 ```
 
-该脚本通过 SSH + tar 把文件推到路由器（绕过包管理器），适合调试。卸载：`sh scripts/uninstall-from-router.sh root@192.168.1.1 [--purge]`。
+This pushes the files over SSH + tar (bypassing the package manager) and is intended for debugging. To uninstall: `sh scripts/uninstall-from-router.sh root@192.168.1.1 [--purge]`.
 
 ---
 
-## 5. 首次使用流程
+## 5. First-time setup
 
-1. **Cloudflare 侧**：Zero Trust → Networks → Tunnels → Create a remotely-managed tunnel，复制 Tunnel Token。
-2. **LuCI → 设置**：
-   - 粘贴 Token → 「保存 Token 并重启」（或切到 `config.yml` 模式并填写配置）；
-   - 「启用隧道」打勾 → **保存并应用**。
-3. **LuCI → 升级**：点「检查最新版本」→「升级到最新版（stable）」。首次安装也走这个按钮（二进制不随包分发，约 38 MB）。
-4. **LuCI → 状态**：确认 `● 运行中`，查看版本与日志。
+1. **Cloudflare side**: Zero Trust → Networks → Tunnels → Create a remotely-managed tunnel, then copy the Tunnel Token.
+2. **LuCI → Settings**:
+   - Paste the Token → "Save Token and restart" (or switch to `config.yml` mode and fill in the config);
+   - Tick "Enable tunnel" → **Save & Apply**.
+3. **LuCI → Upgrade**: click "Check latest version" → "Upgrade to latest (stable)". Use this button on a fresh install too (the binary is not shipped with the generic package, about 38 MB).
+4. **LuCI → Status**: confirm `● Running` and check the version and log.
 
-> 若路由器只有 128 MB 内存，升级器会在内存不足时先停隧道再下载；空间不足会直接报错并保留旧版本，不会写入半个二进制。
+> On routers with only 128 MB of RAM, the updater stops the tunnel before downloading when memory is low; if disk space is insufficient it aborts with an error and keeps the old version, never writing a partial binary.
 
 ---
 
-## 6. 升级是怎么工作的
+## 6. How upgrades work
 
 ```
-LuCI「升级」按钮
-  └─ cgi-exec → cloudflared-ctl start-update --latest --force   (立即返回)
-       └─ setsid 后台 → cloudflared-ctl update-run --force
-            ├─ flock /var/run/cloudflared/update.lock （防并发）
-            ├─ GitHub API /releases/latest → tag_name + 资产 digest/size
-            ├─ 检查 /tmp 空间、MemAvailable、/usr/sbin 剩余空间
-            ├─ 下载 cloudflared-linux-<arch> 到 /tmp（可选 download_mirror）
-            ├─ sha256sum 对比官方 digest；再跑一次 --version 自检
-            ├─ cp 到 /usr/sbin/cloudflared.new → 备份旧版 .bak → 停服务
-            ├─ mv 原子替换 → sync → 启动服务
-            └─ 写 update.state / update.log / UCI last_update
+LuCI "Upgrade" button
+  └─ cgi-exec → cloudflared-ctl start-update --latest --force   (returns immediately)
+       └─ setsid background → cloudflared-ctl update-run --force
+            ├─ flock /var/run/cloudflared/update.lock (concurrency guard)
+            ├─ GitHub API /releases/latest → tag_name + asset digest/size
+            ├─ check /tmp space, MemAvailable, free space in /usr/sbin
+            ├─ download cloudflared-linux-<arch> to /tmp (optional download_mirror)
+            ├─ sha256sum against the official digest; then a --version self-check
+            ├─ cp to /usr/sbin/cloudflared.new → back up old binary as .bak → stop service
+            ├─ atomic mv → sync → start service
+            └─ write update.state / update.log / UCI last_update
 ```
 
-- 所有步骤写入 `/var/run/cloudflared/update.log` 并同步 syslog（`logread -e cloudflared-update`）。
-- LuCI 轮询 `status` + `log`（2 秒），任务状态：`pending → running → done / error`。
-- 升级在后台运行，**关闭页面不会中断**；`flock` 保证 cron 与手动点击不会打架。
-- 中断（信号）时会自动把停掉的隧道重新拉起。
-- **GitHub Release CDN 不通时**：在「设置 → 升级设置 → 下载镜像」填镜像前缀（如 `https://gh-proxy.com/`）。镜像只作用于二进制下载 URL，版本元数据与 SHA-256 摘要仍来自 `api.github.com`，校验不会放松；也可以直接安装对应架构的离线包。
-- 下载停滞（60 秒内低于 2 KB/s）或总耗时超过 300 秒会主动失败并在状态/日志里给出提示，不会无限卡在「正在下载」。
+- Every step is written to `/var/run/cloudflared/update.log` and mirrored to syslog (`logread -e cloudflared-update`).
+- LuCI polls `status` + `log` every 2 seconds; job states: `pending → running → done / error`.
+- Upgrades run in the background, so **closing the page does not interrupt them**; `flock` prevents cron and manual clicks from colliding.
+- On interruption (signal), the tunnel that was stopped is started again automatically.
+- **If the GitHub Release CDN is unreachable**: set a mirror prefix under "Settings → Upgrade settings → Download mirror" (e.g. `https://gh-proxy.com/`). The mirror applies only to the binary download URL — release metadata and the SHA-256 digest still come from `api.github.com`, so verification is never weakened. Installing the matching offline package is the other option.
+- A stalled download (below 2 KB/s for 60 seconds) or a total runtime over 300 seconds fails proactively with a hint in the status/log, instead of hanging forever at "Downloading".
 
-### 支持的架构与资产
+### Supported architectures and assets
 
-| `uname -m` | 资产 |
+| `uname -m` | Asset |
 | --- | --- |
 | `x86_64` | `cloudflared-linux-amd64` |
 | `aarch64` | `cloudflared-linux-arm64` |
 | `armv7*`, `armv8l` | `cloudflared-linux-armhf` |
 | `armv6*`, `armv5*` | `cloudflared-linux-arm` |
 | `i386`–`i686` | `cloudflared-linux-386` |
-| 其他（mips / riscv…） | 官方未提供 → 界面报错，可设 `arch_override` 手动指定 |
+| Other (mips / riscv...) | No official binary → the UI reports an error; `arch_override` can be set manually |
 
-### sysupgrade 之后
+### After sysupgrade
 
-`/etc/sysupgrade.conf` 保留配置、Token、init 脚本、两个 CLI 与 LuCI 文件；安装**架构离线包**时还会保留内置的 `/usr/sbin/cloudflared`（离线设备刷机后不用重新下载）。`rc.local` 钩子检测到二进制缺失时，等待网络后调用 `cloudflared-update --restore` 重新下载并启动。
-注意：sysupgrade 后包管理器数据库不会保留该包，建议刷机完成后重新安装一次 ipk/apk，使其成为受管包。
+`/etc/sysupgrade.conf` keeps the configuration, Token, init script, both CLI tools and the LuCI files; installing an **architecture package** also keeps the bundled `/usr/sbin/cloudflared` (offline devices do not need to re-download after flashing). If the binary is missing, an `rc.local` hook waits for the network and calls `cloudflared-update --restore` to download and start it again.
+Note: the package manager database is not preserved across sysupgrade, so reinstall the ipk/apk once afterwards to make it a managed package again.
 
 ---
 
-## 7. UCI 配置
+## 7. UCI configuration
 
-`/etc/config/cloudflared`，两个匿名命名段：
+`/etc/config/cloudflared`, two named sections:
 
-| 段 | 选项 | 默认 | 含义 |
+| Section | Option | Default | Meaning |
 | --- | --- | --- | --- |
-| `main` | `enabled` | `0` | 是否启动隧道 |
+| `main` | `enabled` | `0` | Whether to start the tunnel |
 | | `mode` | `token` | `token` / `config` |
 | | `protocol` | `auto` | `auto` / `quic` / `http2` |
-| | `loglevel` | `info` | 日志级别 |
-| | `metrics_addr` | 空 | 如 `127.0.0.1:20241` |
-| | `extra_args` | 空 | 空格分隔的附加参数 |
-| | `tune_rmem` | `1` | 设置 `net.core.rmem_max` |
-| | `config_file` | `/etc/cloudflared/config.yml` | 本地配置路径 |
+| | `loglevel` | `info` | Log level |
+| | `metrics_addr` | empty | e.g. `127.0.0.1:20241` |
+| | `extra_args` | empty | Space-separated additional arguments |
+| | `tune_rmem` | `1` | Set `net.core.rmem_max` |
+| | `config_file` | `/etc/cloudflared/config.yml` | Local config path |
 | `update` | `channel` | `stable` | `stable` / `preview` / `pinned` |
-| | `pinned_version` | 空 | 锁定版本 tag |
-| | `auto_update` | `0` | 定时升级开关 |
-| | `auto_update_time` | `30 3 * * *` | cron 表达式 |
-| | `github_token` | 空 | 提升 API 限流（可选） |
-| | `download_mirror` | 空 | Release 资产下载镜像前缀，如 `https://gh-proxy.com/`（可选） |
-| | `arch_override` | `auto` | 手动指定资产后缀；架构离线包安装时会锁定为对应架构 |
-| | `verify_sha256` | `1` | 校验官方 digest |
-| | `keep_backup` | `1` | 保留 `.bak` |
-| | `last_update` | 空 | 由升级器写入 |
+| | `pinned_version` | empty | Locked release tag |
+| | `auto_update` | `0` | Scheduled upgrade toggle |
+| | `auto_update_time` | `30 3 * * *` | Cron expression |
+| | `github_token` | empty | Raises the API rate limit (optional) |
+| | `download_mirror` | empty | Mirror prefix for Release assets, e.g. `https://gh-proxy.com/` (optional) |
+| | `arch_override` | `auto` | Manually set the asset suffix; locked to the architecture when an offline package is installed |
+| | `verify_sha256` | `1` | Verify the official digest |
+| | `keep_backup` | `1` | Keep `.bak` |
+| | `last_update` | empty | Written by the updater |
 
-**Token 不放在 UCI**：UCI 文件默认 0644，任何有读权限的进程都能看到；本项目把它写在 0600 的独立文件里。
+**The Token is never stored in UCI**: UCI files are 0644 by default and readable by any process with read access. This project writes it to a separate 0600 file instead.
 
 ---
 
-## 8. 命令行
+## 8. Command line
 
 ```sh
-cloudflared-ctl status                          # JSON 状态快照（不联网）
-cloudflared-ctl check                           # 查询最新版本并刷新缓存
-cloudflared-ctl log                             # 最近 200 行升级日志
-cloudflared-ctl start-update --latest            # 后台升级到最新正式版
+cloudflared-ctl status                          # JSON status snapshot (no network access)
+cloudflared-ctl check                           # Query the latest release and refresh the cache
+cloudflared-ctl log                             # Last 200 lines of the upgrade log
+cloudflared-ctl start-update --latest            # Background upgrade to the latest stable release
 cloudflared-ctl start-update --version 2026.10.7
-cloudflared-ctl update-run --force              # 前台同步升级（SSH / cron）
-cloudflared-ctl rollback                        # 回滚到 .bak
-cloudflared-update --cron                       # cron 入口（对比版本后再下载）
-cloudflared-update --restore                    # sysupgrade 后恢复入口
+cloudflared-ctl update-run --force              # Foreground synchronous upgrade (SSH / cron)
+cloudflared-ctl rollback                        # Roll back to .bak
+cloudflared-update --cron                       # cron entry point (compares versions before downloading)
+cloudflared-update --restore                    # sysupgrade restore entry point
 /etc/init.d/cloudflared restart
 logread -e cloudflared-update
 ```
 
 ---
 
-## 9. 排障
+## 9. Troubleshooting
 
-| 现象 | 排查 |
+| Symptom | What to check |
 | --- | --- |
-| `Malformed package file` | 说明 ipk 是 `ar` 容器（v1.0.0 的问题）；改用 v1.0.1+ 的 gzip/tar 包，`tar -tzf xxx.ipk` 应列出 `./debian-binary ./control.tar.gz ./data.tar.gz` |
-| 安装成功但文件没落地 | 包内含 PAX `PaxHeader/` 条目；用本仓库 `scripts/make-ipk.sh` 重新构建（纯 USTAR），别用系统 `tar` 直接打 |
-| `awk: bad regex … Invalid contents of {}` | 旧版 `cloudflared-ctl` 的 JSON 切分问题，升级到 v1.0.1+ |
-| 菜单不显示 | 确认 `/usr/share/rpcd/acl.d/luci-app-cloudflared.json` 存在且 `rpcd` 已重启；`uci show cloudflared` 能读到配置；浏览器强刷清 LuCI 缓存 |
-| 按钮报权限错误 | ACL 未生效，`/etc/init.d/rpcd restart`；确认 `rpcd-mod-file` 与 `luci-base`（cgi-io）已安装 |
-| 检查更新失败 | `curl -fsSL https://api.github.com/repos/cloudflare/cloudflared/releases/latest`；未认证 API 限流 60 次/小时，可填 GitHub Token |
-| 一直卡在「正在下载」/ 下载失败 | 设备到 GitHub Release CDN 不通：① 直接装对应架构的离线包（推荐）；② 在「设置 → 升级设置 → 下载镜像」填 `https://gh-proxy.com/` 等前缀。升级页会显示当前下载源 |
-| 装了架构包但没有二进制 | `uname -m` 与包架构不匹配，`postinst` 主动删除了内置二进制；`logread -e cloudflared` 有记录，换对应架构的包重装即可 |
-| 下载成功但服务不运行 | 看 `logread`；Token 是否粘贴、config.yml 是否填了 `tunnel:`、是否点了「启用隧道」 |
-| 提示架构不支持 | 官方没有 mips/riscv 二进制；确认 `uname -m` 与 `arch_override` |
-| 空间/内存不足 | 升级器会保留旧版本并写明缺多少 KB；清理 flash 或改用外置存储后重试 |
-| 升级后异常 | 升级页「回滚到上一版本」，或 `cloudflared-ctl rollback` |
+| `Malformed package file` | The ipk is an `ar` container (the v1.0.0 bug); use a v1.0.1+ gzip/tar package. `tar -tzf xxx.ipk` should list `./debian-binary ./control.tar.gz ./data.tar.gz` |
+| Install succeeded but no files landed | The package contains PAX `PaxHeader/` entries; rebuild with this repository's `scripts/make-ipk.sh` (pure USTAR) instead of the system `tar` |
+| `awk: bad regex … Invalid contents of {}` | JSON splitting bug in older `cloudflared-ctl` versions; upgrade to v1.0.1+ |
+| Menu not shown | Confirm `/usr/share/rpcd/acl.d/luci-app-cloudflared.json` exists and `rpcd` was restarted; `uci show cloudflared` returns config; hard-refresh the browser to clear the LuCI cache |
+| Buttons report a permission error | ACL not applied: `/etc/init.d/rpcd restart`; confirm `rpcd-mod-file` and `luci-base` (cgi-io) are installed |
+| Check for updates fails | `curl -fsSL https://api.github.com/repos/cloudflare/cloudflared/releases/latest`; the unauthenticated API is limited to 60 requests/hour, so a GitHub Token can help |
+| Stuck at "Downloading" / download fails | The device cannot reach the GitHub Release CDN: ① install the matching per-architecture offline package (recommended), or ② set `https://gh-proxy.com/` or another prefix under "Settings → Upgrade settings → Download mirror". The Upgrade page shows the current download source |
+| Architecture package installed but no binary | `uname -m` did not match the package architecture, so `postinst` removed the bundled binary; see `logread -e cloudflared`, then reinstall the correct package |
+| Download succeeded but service not running | Check `logread`; verify the Token was pasted, `config.yml` contains `tunnel:`, and "Enable tunnel" was ticked |
+| "Architecture not supported" | Cloudflare publishes no mips/riscv binary; check `uname -m` and `arch_override` |
+| Not enough space / memory | The updater keeps the old version and reports how many KB are missing; free up flash or use external storage and retry |
+| Broken after an upgrade | "Roll back to previous version" on the Upgrade page, or `cloudflared-ctl rollback` |
 
 ---
 
-## 10. 开发
+## 10. Development
 
 ```sh
-sh scripts/check.sh                       # sh -n / JS 语法 / JSON 校验
-sh scripts/make-ipk.sh                    # 通用包 _all.ipk
-sh scripts/fetch-binaries.sh              # 拉取 5 个架构官方二进制并校验 SHA-256
-sh scripts/make-ipk.sh --all              # 通用包 + 5 个架构离线包
-sh scripts/make-ipk.sh --arch armhf       # 只构建指定架构包
-MIRROR=https://gh-proxy.com/ sh scripts/fetch-binaries.sh   # 本机下载不通时走镜像
-tar -tzf dist/luci-app-cloudflared_1.1.0-1_all.ipk         # 查看外层包内容
+sh scripts/check.sh                       # sh -n / JS syntax / JSON validation
+sh scripts/make-ipk.sh                    # Generic _all.ipk
+sh scripts/fetch-binaries.sh              # Download and SHA-256 verify the 5 official binaries
+sh scripts/make-ipk.sh --all              # Generic package + 5 architecture packages
+sh scripts/make-ipk.sh --arch armhf       # Build only the specified architecture
+MIRROR=https://gh-proxy.com/ sh scripts/fetch-binaries.sh   # Use a mirror when direct download fails
+tar -tzf dist/luci-app-cloudflared_1.1.0-1_all.ipk         # Inspect the outer package
 ```
 
-`scripts/fetch-binaries.sh` 从 GitHub API 读取每个资产的 `digest` 并逐一校验，产物在 `dist/bin/`（含 `manifest.json`，记录 tag / digest / size）；`--all` 构建时会再次校验，任何一个二进制与官方摘要不符就中止。`dist/` 与 `dist/bin/` 已被 `.gitignore` 排除，不会把 100 MB 二进制提交进仓库。
+`scripts/fetch-binaries.sh` reads each asset's `digest` from the GitHub API and verifies every download; output goes to `dist/bin/` (including `manifest.json` with tag / digest / size). `--all` verifies them again and aborts if any binary differs from the official digest. `dist/` and `dist/bin/` are excluded by `.gitignore`, so ~100 MB of binaries never enter the repository.
 
-CI 在每次 push 跑静态检查、shellcheck（仅 error 级别）并产出通用包；在 `v*` tag 或手动触发时额外构建全部分架构包并上传产物。UI 文案用 `_()` 包裹，便于后续补 `.po` 翻译。
+CI runs static checks, shellcheck (error level only) and builds the generic package on every push; on `v*` tags or manual triggers it also builds all per-architecture packages and uploads the artifacts. UI strings are wrapped in `_()` so `.po` translations can be added later.
 
 ---
 
-## 11. 许可与致谢
+## 11. License and credits
 
-- 本项目 MIT，见 [LICENSE](LICENSE)。
-- `cloudflared` 是 Cloudflare 的产品，二进制均取自其官方 GitHub Release，本项目不修改；架构离线包只是把原样文件与官方 SHA-256 摘要一起打包，运行时的一键升级仍会校验官方 digest。
-- 设计参考：[Coralesoft/OpenwrtCloudflare](https://github.com/Coralesoft/OpenwrtCloudflare)、[OpenWrt LuCI](https://github.com/openwrt/luci) 的 JS view / ACL 规范。
+- This project is MIT licensed, see [LICENSE](LICENSE).
+- `cloudflared` is a Cloudflare product. All binaries come unmodified from its official GitHub Releases; the per-architecture packages simply bundle the original file together with the official SHA-256 digest, and one-click upgrades at runtime still verify that digest.
+- Design references: [Coralesoft/OpenwrtCloudflare](https://github.com/Coralesoft/OpenwrtCloudflare) and the JS view / ACL conventions of [OpenWrt LuCI](https://github.com/openwrt/luci).

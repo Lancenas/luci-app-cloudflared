@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- 文档双语化：`README.md` 改为英文主版（GitHub 仓库首页默认展示），中文原文完整保留为 `README.zh-CN.md`；两份文档顶部互相提供语言切换链接，英文版副标题直接给出「中文版」入口。
+
 ## 1.1.0 (2026-11-06)
 
 ARM 真机测试（Kwrt 24.10.0-rc2 / Thunder OneCloud / `armv7l` / `arm_cortex-a5_vfpv4`）后的功能版本：
